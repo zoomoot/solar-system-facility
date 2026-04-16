@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+bin/
+include/
+lib/
+lib64/
+pyvenv.cfg
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Flask
+instance/
+.webassets-cache
+
+# Cache
+cache/
+*.cache
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# 3D model cache (large, rebuilt from APIs)
+cache/models/
+
+# Large data files (downloaded/generated, not source code)
+MPCORB.DAT
+de421.bsp
+data/full_sbdb_cache.json
+*.bsp
+
+# macOS resource forks
+._*
+
+._*

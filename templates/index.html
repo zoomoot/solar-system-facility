@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Solar System Small Bodies Explorer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        header {
+            text-align: center;
+            padding: 30px 0;
+            border-bottom: 2px solid #2a3f5f;
+            margin-bottom: 30px;
+        }
+        
+        h1 {
+            font-size: 2.5em;
+            color: #4a9eff;
+            margin-bottom: 10px;
+            text-shadow: 0 0 20px rgba(74, 158, 255, 0.5);
+        }
+        
+        .subtitle {
+            color: #8a9fb5;
+            font-size: 1.1em;
+        }
+        
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .card {
+            background: rgba(42, 63, 95, 0.4);
+            border: 1px solid #2a3f5f;
+            border-radius: 10px;
+            padding: 20px;
+            backdrop-filter: blur(10px);
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(74, 158, 255, 0.3);
+        }
+        
+        .card h2 {
+            color: #4a9eff;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+        }
+        
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #5fd3ff;
+            margin: 10px 0;
+        }
+        
+        .stat-label {
+            color: #8a9fb5;
+            font-size: 0.9em;
+        }
+        
+        .controls {
+            background: rgba(42, 63, 95, 0.4);
+            border: 1px solid #2a3f5f;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .control-group {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        
+        .control-group label {
+            color: #8a9fb5;
+            font-weight: 500;
+        }
+        
+        select, input, button {
+            padding: 10px 15px;
+            border-radius: 5px;
+            border: 1px solid #2a3f5f;
+            background: rgba(26, 31, 58, 0.8);
+            color: #e0e0e0;
+            font-size: 1em;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #4a9eff 0%, #357abd 100%);
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 5px 15px rgba(74, 158, 255, 0.4);
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .table-container {
+            background: rgba(42, 63, 95, 0.4);
+            border: 1px solid #2a3f5f;
+            border-radius: 10px;
+            padding: 20px;
+            overflow-x: auto;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        thead {
+            background: rgba(74, 158, 255, 0.1);
+        }
+        
+        th {
+            padding: 12px;
+            text-align: left;
+            color: #4a9eff;
+            font-weight: 600;
+            border-bottom: 2px solid #2a3f5f;
+        }
+        
+        td {
+            padding: 10px 12px;
+            border-bottom: 1px solid rgba(42, 63, 95, 0.5);
+        }
+        
+        tbody tr:hover {
+            background: rgba(74, 158, 255, 0.1);
+        }
+        
+        .priority-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+        
+        .priority-high {
+            background: rgba(255, 82, 82, 0.3);
+            color: #ff5252;
+            border: 1px solid #ff5252;
+        }
+        
+        .priority-medium {
+            background: rgba(255, 193, 7, 0.3);
+            color: #ffc107;
+            border: 1px solid #ffc107;
+        }
+        
+        .priority-low {
+            background: rgba(76, 175, 80, 0.3);
+            color: #4caf50;
+            border: 1px solid #4caf50;
+        }
+        
+        .completeness-bar {
+            width: 100%;
+            height: 20px;
+            background: rgba(26, 31, 58, 0.8);
+            border-radius: 10px;
+            overflow: hidden;
+            position: relative;
+        }
+        
+        .completeness-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #ff5252 0%, #ffc107 50%, #4caf50 100%);
+            transition: width 0.5s;
+        }
+        
+        .completeness-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 0.8em;
+            font-weight: 600;
+            color: #fff;
+            text-shadow: 0 0 3px rgba(0,0,0,0.5);
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #8a9fb5;
+        }
+        
+        .spinner {
+            border: 3px solid rgba(74, 158, 255, 0.3);
+            border-top: 3px solid #4a9eff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .missing-props {
+            font-size: 0.85em;
+            color: #ff8a80;
+        }
+        
+        .chart-container {
+            height: 300px;
+            margin-top: 20px;
+        }
+        
+        .property-bar {
+            display: flex;
+            align-items: center;
+            margin: 8px 0;
+        }
+        
+        .property-label {
+            width: 120px;
+            font-size: 0.9em;
+            color: #8a9fb5;
+        }
+        
+        .property-bar-fill {
+            flex: 1;
+            height: 25px;
+            background: rgba(26, 31, 58, 0.8);
+            border-radius: 5px;
+            overflow: hidden;
+            position: relative;
+        }
+        
+        .property-bar-inner {
+            height: 100%;
+            background: linear-gradient(90deg, #4a9eff 0%, #5fd3ff 100%);
+            transition: width 0.5s;
+        }
+        
+        .property-bar-text {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 0.8em;
+            font-weight: 600;
+            color: #fff;
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .tab {
+            padding: 12px 24px;
+            background: rgba(42, 63, 95, 0.4);
+            border: 1px solid #2a3f5f;
+            border-radius: 8px 8px 0 0;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .tab.active {
+            background: rgba(74, 158, 255, 0.2);
+            border-bottom-color: transparent;
+            color: #4a9eff;
+        }
+        
+        .tab:hover {
+            background: rgba(74, 158, 255, 0.1);
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🌌 Solar System Small Bodies Explorer</h1>
+            <p class="subtitle">Identifying Under-Researched Objects for Robotic Exploration</p>
+        </header>
+        
+        <div class="dashboard" id="statsCards">
+            <div class="card">
+                <h2>Total Objects</h2>
+                <div class="stat-value" id="totalObjects">-</div>
+                <div class="stat-label">In current dataset</div>
+            </div>
+            
+            <div class="card">
+                <h2>High Priority</h2>
+                <div class="stat-value" id="highPriority">-</div>
+                <div class="stat-label">Under-researched NEOs/PHAs</div>
+            </div>
+            
+            <div class="card">
+                <h2>Avg Completeness</h2>
+                <div class="stat-value" id="avgCompleteness">-</div>
+                <div class="stat-label">Property coverage</div>
+            </div>
+            
+            <div class="card">
+                <h2>Data Sources</h2>
+                <div class="stat-value">2</div>
+                <div class="stat-label">JPL SBDB • SsODNet</div>
+            </div>
+        </div>
+        
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('explorer')">Object Explorer</div>
+            <div class="tab" onclick="switchTab('analytics')">Data Analytics</div>
+            <div class="tab" onclick="switchTab('underresearched')">Under-Researched</div>
+        </div>
+        
+        <div id="explorer" class="tab-content active">
+            <div class="controls">
+                <div class="control-group">
+                    <label>Data Source:</label>
+                    <select id="sourceSelect">
+                        <option value="jpl">JPL SBDB</option>
+                        <option value="ssodnet">SsODNet</option>
+                    </select>
+                    
+                    <label>Limit:</label>
+                    <input type="number" id="limitInput" value="100" min="10" max="500" step="10">
+                    
+                    <button onclick="loadObjects()">Load Objects</button>
+                    <button onclick="exportData()">Export CSV</button>
+                </div>
+            </div>
+            
+            <div class="table-container">
+                <div id="loadingIndicator" class="loading" style="display: none;">
+                    <div class="spinner"></div>
+                    <p>Loading data from APIs...</p>
+                </div>
+                
+                <table id="objectsTable">
+                    <thead>
+                        <tr>
+                            <th>Designation</th>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Completeness</th>
+                            <th>Priority</th>
+                            <th>Missing Properties</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="objectsTableBody">
+                        <tr>
+                            <td colspan="7" style="text-align: center; padding: 40px; color: #8a9fb5;">
+                                Click "Load Objects" to begin exploring
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <div id="analytics" class="tab-content">
+            <div class="card">
+                <h2>Property Coverage Analysis</h2>
+                <p class="stat-label" style="margin-bottom: 20px;">Percentage of objects with each property</p>
+                <div id="propertyChart"></div>
+            </div>
+        </div>
+        
+        <div id="underresearched" class="tab-content">
+            <div class="controls">
+                <div class="control-group">
+                    <label>Minimum Priority:</label>
+                    <select id="priorityFilter">
+                        <option value="high">High Only</option>
+                        <option value="medium" selected>Medium & High</option>
+                        <option value="low">All Priorities</option>
+                    </select>
+                    
+                    <button onclick="loadUnderResearched()">Find Targets</button>
+                </div>
+            </div>
+            
+            <div class="table-container">
+                <div id="underResearchedContent">
+                    <p style="text-align: center; padding: 40px; color: #8a9fb5;">
+                        Click "Find Targets" to identify under-researched objects
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let currentData = [];
+        
+        function switchTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected tab
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+            
+            // Load data for specific tabs
+            if (tabName === 'analytics' && currentData.length === 0) {
+                loadStats();
+            }
+        }
+        
+        async function loadObjects() {
+            const source = document.getElementById('sourceSelect').value;
+            const limit = document.getElementById('limitInput').value;
+            
+            document.getElementById('loadingIndicator').style.display = 'block';
+            document.getElementById('objectsTableBody').innerHTML = '';
+            
+            try {
+                const response = await fetch(`/api/objects/search?source=${source}&limit=${limit}`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    currentData = data.objects;
+                    displayObjects(data.objects);
+                    updateStats(data.objects);
+                } else {
+                    alert('Error loading data: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Failed to load data. Check console for details.');
+            } finally {
+                document.getElementById('loadingIndicator').style.display = 'none';
+            }
+        }
+        
+        function displayObjects(objects) {
+            const tbody = document.getElementById('objectsTableBody');
+            tbody.innerHTML = '';
+            
+            if (objects.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px;">No objects found</td></tr>';
+                return;
+            }
+            
+            objects.forEach(obj => {
+                const row = document.createElement('tr');
+                
+                const designation = obj.pdes || obj.spkid || 'Unknown';
+                const name = obj.name || '-';
+                const neo = obj.neo === 'Y' ? 'NEO' : 'MBA';
+                const pha = obj.pha === 'Y' ? ' (PHA)' : '';
+                const type = neo + pha;
+                
+                const analysis = obj.analysis || {};
+                const completeness = analysis.completeness_score || 0;
+                const priority = analysis.research_priority || 'unknown';
+                const missing = analysis.missing_properties || [];
+                
+                row.innerHTML = `
+                    <td><strong>${designation}</strong></td>
+                    <td>${name}</td>
+                    <td>${type}</td>
+                    <td>
+                        <div class="completeness-bar">
+                            <div class="completeness-fill" style="width: ${completeness}%"></div>
+                            <div class="completeness-text">${completeness.toFixed(0)}%</div>
+                        </div>
+                    </td>
+                    <td><span class="priority-badge priority-${priority}">${priority.toUpperCase()}</span></td>
+                    <td><span class="missing-props">${missing.join(', ') || 'None'}</span></td>
+                    <td><button onclick="viewDetails('${designation}')">Details</button></td>
+                `;
+                
+                tbody.appendChild(row);
+            });
+        }
+        
+        function updateStats(objects) {
+            document.getElementById('totalObjects').textContent = objects.length;
+            
+            let highPriority = 0;
+            let totalCompleteness = 0;
+            
+            objects.forEach(obj => {
+                if (obj.analysis) {
+                    if (obj.analysis.research_priority === 'high') {
+                        highPriority++;
+                    }
+                    totalCompleteness += obj.analysis.completeness_score || 0;
+                }
+            });
+            
+            document.getElementById('highPriority').textContent = highPriority;
+            
+            const avgCompleteness = objects.length > 0 ? (totalCompleteness / objects.length).toFixed(1) : 0;
+            document.getElementById('avgCompleteness').textContent = avgCompleteness + '%';
+        }
+        
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats/completeness');
+                const data = await response.json();
+                
+                if (data.success) {
+                    displayPropertyChart(data.stats);
+                }
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+        
+        function displayPropertyChart(stats) {
+            const chartDiv = document.getElementById('propertyChart');
+            chartDiv.innerHTML = '';
+            
+            const properties = Object.entries(stats.property_coverage);
+            const total = stats.total_objects;
+            
+            properties.sort((a, b) => b[1] - a[1]);
+            
+            properties.forEach(([prop, count]) => {
+                const percentage = (count / total * 100).toFixed(1);
+                
+                const barDiv = document.createElement('div');
+                barDiv.className = 'property-bar';
+                barDiv.innerHTML = `
+                    <div class="property-label">${prop}</div>
+                    <div class="property-bar-fill">
+                        <div class="property-bar-inner" style="width: ${percentage}%"></div>
+                        <div class="property-bar-text">${percentage}% (${count}/${total})</div>
+                    </div>
+                `;
+                
+                chartDiv.appendChild(barDiv);
+            });
+        }
+        
+        async function loadUnderResearched() {
+            const priority = document.getElementById('priorityFilter').value;
+            const contentDiv = document.getElementById('underResearchedContent');
+            
+            contentDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Analyzing objects...</p></div>';
+            
+            try {
+                const response = await fetch(`/api/under-researched?priority=${priority}&limit=50`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    displayUnderResearched(data.objects);
+                } else {
+                    contentDiv.innerHTML = '<p style="text-align: center; padding: 40px;">Error loading data</p>';
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                contentDiv.innerHTML = '<p style="text-align: center; padding: 40px;">Failed to load data</p>';
+            }
+        }
+        
+        function displayUnderResearched(objects) {
+            const contentDiv = document.getElementById('underResearchedContent');
+            
+            if (objects.length === 0) {
+                contentDiv.innerHTML = '<p style="text-align: center; padding: 40px;">No under-researched objects found with current filters</p>';
+                return;
+            }
+            
+            let html = '<table><thead><tr><th>Rank</th><th>Designation</th><th>Name</th><th>Type</th><th>Priority</th><th>Completeness</th><th>Key Missing Data</th></tr></thead><tbody>';
+            
+            objects.forEach((obj, index) => {
+                const designation = obj.pdes || obj.spkid || 'Unknown';
+                const name = obj.name || '-';
+                const neo = obj.neo === 'Y' ? 'NEO' : 'MBA';
+                const pha = obj.pha === 'Y' ? ' (PHA)' : '';
+                const type = neo + pha;
+                const analysis = obj.analysis || {};
+                const priority = analysis.research_priority || 'unknown';
+                const completeness = analysis.completeness_score || 0;
+                const missing = analysis.missing_properties || [];
+                
+                html += `
+                    <tr>
+                        <td><strong>#${index + 1}</strong></td>
+                        <td><strong>${designation}</strong></td>
+                        <td>${name}</td>
+                        <td>${type}</td>
+                        <td><span class="priority-badge priority-${priority}">${priority.toUpperCase()}</span></td>
+                        <td>${completeness.toFixed(0)}%</td>
+                        <td><span class="missing-props">${missing.slice(0, 3).join(', ')}</span></td>
+                    </tr>
+                `;
+            });
+            
+            html += '</tbody></table>';
+            contentDiv.innerHTML = html;
+        }
+        
+        async function viewDetails(designation) {
+            try {
+                // Show loading state
+                const modal = document.createElement('div');
+                modal.style.cssText = `
+                    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                    background: rgba(10, 14, 39, 0.95); z-index: 10000;
+                    display: flex; align-items: center; justify-content: center;
+                    overflow-y: auto;
+                `;
+                modal.innerHTML = '<div style="color: #4a9eff; font-size: 2em;">Loading object data...</div>';
+                document.body.appendChild(modal);
+                
+                // Fetch merged data from API
+                const response = await fetch(`/api/objects/${designation}`);
+                const data = await response.json();
+                
+                // Build detailed view
+                let html = `
+                    <div style="background: linear-gradient(135deg, #1a1f3a 0%, #2a3f5f 100%); 
+                                border: 2px solid #4a9eff; border-radius: 15px; 
+                                max-width: 900px; max-height: 90vh; overflow-y: auto;
+                                padding: 30px; box-shadow: 0 0 50px rgba(74, 158, 255, 0.5);">
+                        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px;">
+                            <h2 style="color: #4a9eff; margin: 0;">
+                                ${data.jpl?.object?.fullname || designation}
+                            </h2>
+                            <button onclick="this.closest('div').parentElement.parentElement.remove()" 
+                                    style="background: #ff5252; border: none; color: white; 
+                                           padding: 10px 20px; border-radius: 5px; cursor: pointer;
+                                           font-size: 1.1em;">✕ Close</button>
+                        </div>
+                `;
+                
+                // JPL Data Section
+                if (data.jpl?.object) {
+                    const obj = data.jpl.object;
+                    html += `
+                        <div style="background: rgba(42, 63, 95, 0.4); padding: 20px; 
+                                    border-radius: 10px; margin-bottom: 20px; border: 1px solid #2a3f5f;">
+                            <h3 style="color: #5fd3ff; margin-top: 0;">📡 JPL Small-Body Database</h3>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; color: #e0e0e0;">
+                                <div><strong>Designation:</strong> ${obj.des || 'N/A'}</div>
+                                <div><strong>SPK-ID:</strong> ${obj.spkid || 'N/A'}</div>
+                                <div><strong>NEO:</strong> <span style="color: ${obj.neo ? '#ff5252' : '#4caf50'}">${obj.neo ? 'Yes' : 'No'}</span></div>
+                                <div><strong>PHA:</strong> <span style="color: ${obj.pha ? '#ff5252' : '#4caf50'}">${obj.pha ? 'Yes' : 'No'}</span></div>
+                                ${obj.orbit_class ? `<div><strong>Orbit Class:</strong> ${obj.orbit_class.name} (${obj.orbit_class.code})</div>` : ''}
+                            </div>
+                        </div>
+                    `;
+                    
+                    // Orbital elements
+                    if (data.jpl.orbit?.elements) {
+                        html += `
+                            <div style="background: rgba(42, 63, 95, 0.4); padding: 20px; 
+                                        border-radius: 10px; margin-bottom: 20px; border: 1px solid #2a3f5f;">
+                                <h3 style="color: #5fd3ff; margin-top: 0;">🌍 Orbital Elements</h3>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; color: #e0e0e0;">
+                        `;
+                        data.jpl.orbit.elements.forEach(el => {
+                            html += `<div><strong>${el.title}:</strong> ${el.value} ${el.units || ''}</div>`;
+                        });
+                        html += `</div></div>`;
+                    }
+                }
+                
+                // Wikipedia Section
+                if (data.wikipedia?.extract) {
+                    html += `
+                        <div style="background: rgba(42, 63, 95, 0.4); padding: 20px; 
+                                    border-radius: 10px; margin-bottom: 20px; border: 1px solid #2a3f5f;">
+                            <h3 style="color: #5fd3ff; margin-top: 0;">📚 Wikipedia</h3>
+                            ${data.wikipedia.thumbnail ? `
+                                <img src="${data.wikipedia.thumbnail}" 
+                                     style="float: right; max-width: 250px; border-radius: 10px; 
+                                            margin-left: 20px; border: 2px solid #4a9eff;"/>
+                            ` : ''}
+                            <p style="color: #e0e0e0; line-height: 1.6;">${data.wikipedia.extract}</p>
+                            <a href="${data.wikipedia.url}" target="_blank" 
+                               style="color: #4a9eff; text-decoration: none; font-weight: bold;">
+                                📖 Read more on Wikipedia →
+                            </a>
+                        </div>
+                    `;
+                }
+                
+                // SsODNet Data
+                if (data.ssodnet) {
+                    html += `
+                        <div style="background: rgba(42, 63, 95, 0.4); padding: 20px; 
+                                    border-radius: 10px; border: 1px solid #2a3f5f;">
+                            <h3 style="color: #5fd3ff; margin-top: 0;">🌐 SsODNet Data</h3>
+                            <p style="color: #8a9fb5;">Additional data from IMCCE Solar System Object Database Network</p>
+                        </div>
+                    `;
+                }
+                
+                html += '</div>';
+                modal.innerHTML = html;
+                
+            } catch (error) {
+                alert(`Error loading details: ${error.message}`);
+                document.querySelector('[style*="z-index: 10000"]')?.remove();
+            }
+        }
+        
+        function exportData() {
+            if (currentData.length === 0) {
+                alert('No data to export. Load objects first.');
+                return;
+            }
+            
+            let csv = 'Designation,Name,Type,NEO,PHA,Completeness,Priority,Missing Properties\n';
+            
+            currentData.forEach(obj => {
+                const designation = obj.pdes || obj.spkid || 'Unknown';
+                const name = obj.name || '';
+                const neo = obj.neo || 'N';
+                const pha = obj.pha || 'N';
+                const analysis = obj.analysis || {};
+                const completeness = (analysis.completeness_score || 0).toFixed(1);
+                const priority = analysis.research_priority || 'unknown';
+                const missing = (analysis.missing_properties || []).join(';');
+                
+                csv += `"${designation}","${name}","${neo}","${pha}",${completeness},${priority},"${missing}"\n`;
+            });
+            
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'solar_system_objects.csv';
+            a.click();
+        }
+        
+        // Auto-load on page load
+        window.addEventListener('load', () => {
+            loadObjects();
+        });
+    </script>
+</body>
+</html>
+

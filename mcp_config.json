@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "solar-system-explorer": {
+      "command": "python3",
+      "args": [
+        "/Users/gwil/Cursor/Solar-System/mcp_server_simple.py"
+      ],
+      "env": {
+        "PYTHONPATH": "/Users/gwil/Cursor/Solar-System"
+      }
+    }
+  }
+}
+

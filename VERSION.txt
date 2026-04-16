@@ -1,0 +1,160 @@
+════════════════════════════════════════════════════════════════════════════════
+SOLAR SYSTEM SMALL BODIES EXPLORER
+════════════════════════════════════════════════════════════════════════════════
+
+Version: 2.0.0-streamlit
+Release Date: November 16, 2025
+Code Name: "Interstellar"
+
+════════════════════════════════════════════════════════════════════════════════
+COMPONENTS
+════════════════════════════════════════════════════════════════════════════════
+
+1. Flask Backend API (app.py)
+   - Port: 5050
+   - Purpose: Data integration layer
+   - APIs: JPL SBDB, SsODNet, Wikipedia
+   - Caching: 24-hour file-based cache
+   
+2. Streamlit Frontend (streamlit_app.py)
+   - Port: 8501
+   - Purpose: Interactive data science interface
+   - Features: 3D visualizations, Plotly charts, advanced filtering
+   
+3. Database Loader System (loader_app.py + loader_dashboard.py)
+   - Ports: 5060 (API), 8601 (Dashboard)
+   - Purpose: Bulk data loading into MariaDB
+   - Status: Optional (not required for Streamlit app)
+
+════════════════════════════════════════════════════════════════════════════════
+KEY FEATURES
+════════════════════════════════════════════════════════════════════════════════
+
+✓ 3D Orbital Visualizations (Plotly)
+✓ Interactive Scatter/Bar/Histogram Charts
+✓ Real-time Object Counts from JPL API
+✓ Advanced Multi-Filter System
+✓ Merged Data Panels (JPL + SsODNet + Wikipedia)
+✓ Completeness Analysis (0-100% scoring)
+✓ Priority Ranking (High/Medium/Low)
+✓ CSV/JSON Export
+✓ MCP Server for AI Agents
+✓ API Caching System
+✓ Responsive Design
+
+════════════════════════════════════════════════════════════════════════════════
+DATA SOURCES
+════════════════════════════════════════════════════════════════════════════════
+
+• JPL Small-Body Database (NASA/JPL)
+  - 1.3M+ asteroids, comets, NEOs
+  - Physical properties, orbital elements
+  - Real-time API integration
+
+• SsODNet (IMCCE/Observatoire de Paris)
+  - Mass, density, taxonomy
+  - Binary system data
+  - 190M+ measurements
+
+• Wikipedia
+  - Article summaries
+  - Images and thumbnails
+  - External references
+
+════════════════════════════════════════════════════════════════════════════════
+STANDALONE USAGE
+════════════════════════════════════════════════════════════════════════════════
+
+Quick Start:
+   ./START_EXPLORER.sh
+
+Manual Start:
+   1. source venv/bin/activate
+   2. python app.py &
+   3. streamlit run streamlit_app.py
+
+Direct Access:
+   - Streamlit UI: http://localhost:8501
+   - Flask API: http://localhost:5050
+
+════════════════════════════════════════════════════════════════════════════════
+FILE MANIFEST
+════════════════════════════════════════════════════════════════════════════════
+
+Core Application:
+  ✓ app.py (Flask backend, 909 lines)
+  ✓ streamlit_app.py (Streamlit frontend, 1,325 lines)
+  ✓ config.py (Configuration)
+  ✓ requirements.txt (Dependencies)
+  ✓ START_EXPLORER.sh (Standalone launcher)
+
+Frontend:
+  ✓ templates/index.html (Flask web UI)
+
+Database System (Optional):
+  ✓ loader_app.py (Backend API)
+  ✓ loader_dashboard.py (Streamlit dashboard)
+  ✓ mpc_loader.py (MPC data loader)
+  ✓ jpl_mpc_merger.py (Data merger)
+  ✓ database_schema.sql (Schema)
+
+Documentation:
+  ✓ README.md (Complete user guide)
+  ✓ PROJECT_OVERVIEW.md (Architecture)
+  ✓ FEATURES.md (Feature guide)
+  ✓ QUICKSTART.md (Getting started)
+  ✓ STATUS.txt (Current status)
+  ✓ VERSION.txt (This file)
+
+Mission Analysis:
+  ✓ probe_mission_analysis.py (Delta-v calculations)
+  ✓ yorp_mission_design.py (YORP mission)
+  ✓ yorp_science_case.py (Science justification)
+  ✓ yorp_satellite_repurposing.py (Satellite analysis)
+
+MCP Integration:
+  ✓ mcp_server.py (AI agent interface)
+  ✓ mcp_server_simple.py (Simplified MCP)
+  ✓ MCP_README.md (MCP documentation)
+
+════════════════════════════════════════════════════════════════════════════════
+TECHNICAL SPECIFICATIONS
+════════════════════════════════════════════════════════════════════════════════
+
+Python: 3.9+
+Framework: Flask 3.x + Streamlit 1.x
+Visualization: Plotly 5.x
+Database: MariaDB 10.x (optional)
+APIs: REST (JSON)
+Cache: File-based (JSON)
+Ports: 5050 (Flask), 8501 (Streamlit)
+
+Dependencies:
+  - flask, flask-cors
+  - streamlit
+  - plotly, pandas, numpy
+  - requests
+  - pymysql (for database loader)
+
+════════════════════════════════════════════════════════════════════════════════
+CHANGELOG
+════════════════════════════════════════════════════════════════════════════════
+
+v2.0.0-streamlit (November 16, 2025)
+  • Added Streamlit interactive interface
+  • 3D orbital visualizations with Plotly
+  • Advanced filtering and search
+  • Real-time object count updates
+  • Merged data panels (JPL + SsODNet + Wikipedia)
+  • Standalone startup script
+  • Database loader system (optional)
+
+v1.0.0 (November 1, 2025)
+  • Initial Flask-based web application
+  • JPL SBDB and SsODNet integration
+  • Completeness analysis
+  • Priority ranking system
+  • Three-tab interface
+  • MCP server for AI agents
+
+════════════════════════════════════════════════════════════════════════════════
