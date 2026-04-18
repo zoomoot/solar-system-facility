@@ -24,24 +24,6 @@ def _get_config(key, default=None):
         return os.environ.get(key, default)
 
 BACKEND_URL = _get_config("BACKEND_URL", "http://localhost:5050")
-SUPABASE_URL = _get_config("SUPABASE_URL", "")
-SUPABASE_KEY = _get_config("SUPABASE_KEY", "")
-
-# ── Supabase client (lazy, optional) ───────────────────────────────
-_sb_client = None
-
-def get_supabase():
-    global _sb_client
-    if _sb_client is not None:
-        return _sb_client
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        return None
-    try:
-        from supabase import create_client
-        _sb_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        return _sb_client
-    except Exception:
-        return None
 
 # Session state for object details dialog
 if 'show_object_details' not in st.session_state:
@@ -50,8 +32,6 @@ if 'selected_object' not in st.session_state:
     st.session_state.selected_object = None
 if 'entity' not in st.session_state:
     st.session_state.entity = None
-if 'entity_profile' not in st.session_state:
-    st.session_state.entity_profile = None
 st.set_page_config(
     page_title="Solar System Explorer",
     page_icon="🌌",
@@ -107,11 +87,9 @@ def _build_thread_tree(posts):
 
 def _render_thread(node, designation, kind, depth=0):
     """Recursively render a post and its replies with visual nesting."""
-    indent = "│  " * depth
-    sb = get_supabase()
     entity = st.session_state.get("entity")
 
-    author = node.get("entity_name", "Unknown")
+    author = node.get("user_name", "Unknown")
     ts = (node.get("created_at") or "")[:16]
     body = node.get("body") or ""
     post_id = node["id"]
@@ -132,7 +110,7 @@ def _render_thread(node, designation, kind, depth=0):
             unsafe_allow_html=True,
         )
 
-    if entity and sb:
+    if entity:
         reply_key = f"reply_toggle_{kind}_{post_id}"
         if reply_key not in st.session_state:
             st.session_state[reply_key] = False
@@ -151,16 +129,15 @@ def _render_thread(node, designation, kind, depth=0):
                 )
                 if st.form_submit_button("Post Reply"):
                     if reply_body.strip():
-                        profile = st.session_state.get("entity_profile", {})
                         try:
-                            sb.table("contributions").insert({
+                            requests.post(f"{BACKEND_URL}/api/contributions", json={
                                 "object_designation": designation,
-                                "entity_id": str(entity.id),
-                                "entity_name": profile.get("display_name", entity.email),
+                                "user_id": entity["id"],
+                                "user_name": entity.get("display_name", entity.get("email", "?")),
                                 "kind": kind,
                                 "body": reply_body.strip(),
                                 "parent_id": post_id,
-                            }).execute()
+                            }, timeout=10)
                             st.session_state[reply_key] = False
                             st.rerun()
                         except Exception as e:
@@ -170,17 +147,17 @@ def _render_thread(node, designation, kind, depth=0):
         _render_thread(child, designation, kind, depth + 1)
 
 
-def _render_dialogue(designation, kind, label_singular, sb, entity):
+def _render_dialogue(designation, kind, label_singular):
     """Render a complete threaded dialogue for a given contribution kind."""
-    if not sb:
-        st.info("Community features require Supabase configuration.")
-        return
+    entity = st.session_state.get("entity")
 
     try:
-        posts = sb.table("contributions").select("*").eq(
-            "object_designation", designation
-        ).eq("kind", kind).order("created_at").limit(200).execute()
-        post_list = posts.data or []
+        resp = requests.get(
+            f"{BACKEND_URL}/api/contributions",
+            params={"object": designation, "kind": kind},
+            timeout=10,
+        )
+        post_list = resp.json().get("contributions", []) if resp.status_code == 200 else []
     except Exception:
         post_list = []
 
@@ -201,15 +178,14 @@ def _render_dialogue(designation, kind, label_singular, sb, entity):
             )
             if st.form_submit_button(f"Post {label_singular.title()}"):
                 if new_body.strip():
-                    profile = st.session_state.get("entity_profile", {})
                     try:
-                        sb.table("contributions").insert({
+                        requests.post(f"{BACKEND_URL}/api/contributions", json={
                             "object_designation": designation,
-                            "entity_id": str(entity.id),
-                            "entity_name": profile.get("display_name", entity.email),
+                            "user_id": entity["id"],
+                            "user_name": entity.get("display_name", entity.get("email", "?")),
                             "kind": kind,
                             "body": new_body.strip(),
-                        }).execute()
+                        }, timeout=10)
                         st.rerun()
                     except Exception as e:
                         st.error(f"Failed: {str(e)[:80]}")
@@ -603,16 +579,14 @@ def display_object_details_dialog(obj_data):
     st.markdown(f"### 🌠 {name}")
     st.markdown(f"**Designation:** {designation}")
 
-    # Gate: require authentication to view full object details (only when auth is available)
-    sb_gate = get_supabase()
-    if st.session_state.entity is None and sb_gate is not None:
+    # Gate: require authentication to view full object details
+    if st.session_state.entity is None:
         st.markdown("---")
         st.markdown("#### 🔒 Account Required")
         st.markdown(
             "Create a free account or log in to access full object details, "
             "community discussion, and exploration tools."
         )
-        sb = sb_gate
 
         gate_action = st.radio(
             "Action", ["Sign Up", "Login", "Reset Password"],
@@ -624,30 +598,22 @@ def display_object_details_dialog(obj_data):
             if st.button("Login", key="gate_login_btn", type="primary"):
                 if g_email and g_pw:
                     try:
-                        res = sb.auth.sign_in_with_password({"email": g_email, "password": g_pw})
-                        st.session_state.entity = res.user
-                        try:
-                            prof = sb.table("entity_profiles").select("*").eq(
-                                "id", str(res.user.id)
-                            ).single().execute()
-                            st.session_state.entity_profile = prof.data
-                        except Exception:
-                            st.session_state.entity_profile = {}
-                        st.rerun()
-                    except Exception as e:
-                        err = str(e)
-                        if "Invalid login" in err or "invalid" in err.lower():
-                            st.error("Invalid email or password")
-                        elif "Email not confirmed" in err or "not confirmed" in err.lower():
-                            st.error("Please confirm your email first. Check your inbox.")
+                        resp = requests.post(f"{BACKEND_URL}/api/auth/login",
+                                             json={"email": g_email, "password": g_pw}, timeout=10)
+                        rj = resp.json()
+                        if resp.status_code == 200 and rj.get("ok"):
+                            st.session_state.entity = rj["user"]
+                            st.rerun()
                         else:
-                            st.error(f"Login failed: {err[:80]}")
+                            st.error(rj.get("error", "Login failed"))
+                    except Exception as e:
+                        st.error(f"Login failed: {str(e)[:80]}")
                 else:
                     st.warning("Enter email and password")
         elif gate_action == "Sign Up":
             g_name = st.text_input("Display Name", key="gate_signup_name")
             g_email = st.text_input("Email", key="gate_signup_email")
-            g_pw = st.text_input("Password", type="password", key="gate_signup_pw")
+            g_pw = st.text_input("Password (min 6 characters)", type="password", key="gate_signup_pw")
             g_affil = st.text_input(
                 "Affiliation (optional)",
                 placeholder="e.g. Backyard Observatory, UK",
@@ -656,21 +622,18 @@ def display_object_details_dialog(obj_data):
             if st.button("Sign Up", key="gate_signup_btn", type="primary"):
                 if g_name and g_email and g_pw:
                     try:
-                        res = sb.auth.sign_up({"email": g_email, "password": g_pw})
-                        if res.user:
-                            try:
-                                sb.table("entity_profiles").insert({
-                                    "id": str(res.user.id),
-                                    "display_name": g_name,
-                                    "affiliation": g_affil or None,
-                                    "contribution_count": 0,
-                                    "missions_completed": 0,
-                                }).execute()
-                            except Exception:
-                                pass
+                        resp = requests.post(f"{BACKEND_URL}/api/auth/signup", json={
+                            "email": g_email, "password": g_pw,
+                            "display_name": g_name, "affiliation": g_affil,
+                        }, timeout=10)
+                        rj = resp.json()
+                        if resp.status_code == 200 and rj.get("ok"):
                             st.success(
-                                "Account created! Check your email to verify, then log in."
+                                "Account created! Check your email for a verification link, "
+                                "then come back and log in."
                             )
+                        else:
+                            st.error(rj.get("error", "Sign up failed"))
                     except Exception as e:
                         st.error(f"Sign up failed: {str(e)[:80]}")
                 else:
@@ -680,8 +643,9 @@ def display_object_details_dialog(obj_data):
             if st.button("Send Reset Link", key="gate_reset_btn", type="primary"):
                 if g_email:
                     try:
-                        sb.auth.reset_password_email(g_email)
-                        st.success("Password reset link sent. Check your email.")
+                        resp = requests.post(f"{BACKEND_URL}/api/auth/forgot-password",
+                                             json={"email": g_email}, timeout=10)
+                        st.success("If that email exists, a reset link has been sent. Check your inbox.")
                     except Exception as e:
                         st.error(f"Failed: {str(e)[:80]}")
                 else:
@@ -1999,7 +1963,6 @@ def display_object_details_dialog(obj_data):
         st.markdown("#### 🛰 Community Knowledge Base")
         st.caption(f"Object: `{designation}`")
 
-        sb = get_supabase()
         entity = st.session_state.get("entity")
 
         comm_tabs = st.tabs([
@@ -2011,11 +1974,11 @@ def display_object_details_dialog(obj_data):
 
         # ── Discussion sub-tab ──
         with comm_tabs[0]:
-            _render_dialogue(designation, "comment", "comment", sb, entity)
+            _render_dialogue(designation, "comment", "comment")
 
         # ── Observations sub-tab ──
         with comm_tabs[1]:
-            if sb and entity:
+            if entity:
                 with st.form(key=f"obs_form_{designation}"):
                     st.markdown("**Report an Observation**")
                     obs_cols = st.columns(3)
@@ -2029,7 +1992,6 @@ def display_object_details_dialog(obj_data):
                     obs_notes = st.text_area("Notes", key=f"obs_notes_{designation}")
 
                     if st.form_submit_button("Submit Observation"):
-                        profile = st.session_state.get("entity_profile", {})
                         structured = {
                             "obs_date": str(obs_date),
                             "telescope": obs_telescope,
@@ -2039,25 +2001,25 @@ def display_object_details_dialog(obj_data):
                             "location": obs_location,
                         }
                         try:
-                            sb.table("contributions").insert({
+                            requests.post(f"{BACKEND_URL}/api/contributions", json={
                                 "object_designation": designation,
-                                "entity_id": str(entity.id),
-                                "entity_name": profile.get("display_name", entity.email),
+                                "user_id": entity["id"],
+                                "user_name": entity.get("display_name", "?"),
                                 "kind": "observation",
                                 "body": obs_notes,
                                 "structured_data": structured,
-                            }).execute()
+                            }, timeout=10)
                             st.success("Observation recorded.")
                             st.rerun()
                         except Exception as e:
                             st.error(f"Failed: {str(e)[:80]}")
 
             st.markdown("##### Observation Dialogue")
-            _render_dialogue(designation, "observation", "observation", sb, entity)
+            _render_dialogue(designation, "observation", "observation")
 
         # ── Corrections sub-tab ──
         with comm_tabs[2]:
-            if sb and entity:
+            if entity:
                 with st.form(key=f"corr_form_{designation}"):
                     st.markdown("**Suggest a Data Correction**")
                     corr_field = st.selectbox("Field", [
@@ -2075,12 +2037,11 @@ def display_object_details_dialog(obj_data):
 
                     if st.form_submit_button("Submit Correction"):
                         if corr_suggested.strip():
-                            profile = st.session_state.get("entity_profile", {})
                             try:
-                                sb.table("contributions").insert({
+                                requests.post(f"{BACKEND_URL}/api/contributions", json={
                                     "object_designation": designation,
-                                    "entity_id": str(entity.id),
-                                    "entity_name": profile.get("display_name", entity.email),
+                                    "user_id": entity["id"],
+                                    "user_name": entity.get("display_name", "?"),
                                     "kind": "correction",
                                     "body": corr_justification,
                                     "structured_data": {
@@ -2089,7 +2050,7 @@ def display_object_details_dialog(obj_data):
                                         "suggested": corr_suggested,
                                     },
                                     "source_references": [corr_source] if corr_source.strip() else [],
-                                }).execute()
+                                }, timeout=10)
                                 st.success("Correction submitted for review.")
                                 st.rerun()
                             except Exception as e:
@@ -2098,50 +2059,50 @@ def display_object_details_dialog(obj_data):
                             st.warning("Suggested value is required")
 
             st.markdown("##### Correction Dialogue")
-            _render_dialogue(designation, "correction", "correction", sb, entity)
+            _render_dialogue(designation, "correction", "correction")
 
         # ── Mission Reports sub-tab ──
         with comm_tabs[3]:
-            if sb:
-                try:
-                    missions = sb.table("exploration_missions").select("*").eq(
-                        "object_designation", designation
-                    ).order("started_at", desc=True).limit(20).execute()
-                    if missions.data:
-                        for m in missions.data:
-                            status_map = {
-                                "deploying": "🟡 Deploying",
-                                "in_transit": "🔵 In Transit",
-                                "investigating": "🟠 Investigating",
-                                "returning_data": "🔄 Returning Data",
-                                "mission_complete": "✅ Mission Complete",
-                                "mission_failed": "❌ Mission Failed",
-                            }
-                            st.markdown(
-                                f"**{status_map.get(m.get('status', ''), m.get('status', '?'))}** "
-                                f"— requested by {m.get('requested_by_name', '?')} "
-                                f"at {(m.get('started_at') or '')[:16]}"
-                            )
-                            if m.get("findings_summary"):
-                                with st.expander("View mission report"):
-                                    st.markdown(m["findings_summary"])
-                                    gaps = m.get("data_gaps") or []
-                                    if gaps:
-                                        st.markdown("**Data gaps identified:** " + ", ".join(gaps))
-                                    score = m.get("completeness_score")
-                                    if score is not None:
-                                        st.metric("Completeness Score", f"{score:.0%}")
-                                    sources = m.get("sources_queried") or []
-                                    if sources:
-                                        st.caption(f"Sources queried: {', '.join(sources)}")
-                                    dur = m.get("duration_seconds")
-                                    if dur:
-                                        st.caption(f"Mission duration: {dur:.1f}s")
-                            st.markdown("---")
-                    else:
-                        st.info("No exploration missions yet for this object.")
-                except Exception:
-                    st.info("No exploration missions yet for this object.")
+            try:
+                m_resp = requests.get(f"{BACKEND_URL}/api/missions",
+                                      params={"object": designation}, timeout=10)
+                mission_list = m_resp.json().get("missions", []) if m_resp.status_code == 200 else []
+            except Exception:
+                mission_list = []
+
+            if mission_list:
+                for m in mission_list:
+                    status_map = {
+                        "deploying": "🟡 Deploying",
+                        "in_transit": "🔵 In Transit",
+                        "investigating": "🟠 Investigating",
+                        "returning_data": "🔄 Returning Data",
+                        "mission_complete": "✅ Mission Complete",
+                        "mission_failed": "❌ Mission Failed",
+                    }
+                    st.markdown(
+                        f"**{status_map.get(m.get('status', ''), m.get('status', '?'))}** "
+                        f"— requested by {m.get('requested_by_name', '?')} "
+                        f"at {(m.get('started_at') or '')[:16]}"
+                    )
+                    if m.get("findings_summary"):
+                        with st.expander("View mission report"):
+                            st.markdown(m["findings_summary"])
+                            gaps = m.get("data_gaps") or []
+                            if gaps:
+                                st.markdown("**Data gaps identified:** " + ", ".join(gaps))
+                            score = m.get("completeness_score")
+                            if score is not None:
+                                st.metric("Completeness Score", f"{score:.0%}")
+                            sources = m.get("sources_queried") or []
+                            if sources:
+                                st.caption(f"Sources queried: {', '.join(sources)}")
+                            dur = m.get("duration_seconds")
+                            if dur:
+                                st.caption(f"Mission duration: {dur:.1f}s")
+                    st.markdown("---")
+            else:
+                st.info("No exploration missions yet for this object.")
 
             deploy_col1, deploy_col2 = st.columns([2, 1])
             with deploy_col1:
@@ -2155,22 +2116,18 @@ def display_object_details_dialog(obj_data):
                     type="primary",
                     disabled=not can_deploy,
                 ):
-                    profile = st.session_state.get("entity_profile", {})
-                    entity_name = profile.get("display_name", entity.email) if entity else "?"
-
+                    entity_name = entity.get("display_name", "?")
                     mission_id = None
-                    if sb:
-                        try:
-                            m_res = sb.table("exploration_missions").insert({
-                                "object_designation": designation,
-                                "requested_by": str(entity.id),
-                                "requested_by_name": entity_name,
-                                "status": "deploying",
-                            }).execute()
-                            if m_res.data:
-                                mission_id = m_res.data[0].get("id")
-                        except Exception:
-                            pass
+                    try:
+                        mr = requests.post(f"{BACKEND_URL}/api/missions", json={
+                            "object_designation": designation,
+                            "requested_by": entity["id"],
+                            "requested_by_name": entity_name,
+                        }, timeout=10)
+                        if mr.status_code == 200:
+                            mission_id = mr.json().get("id")
+                    except Exception:
+                        pass
 
                     with st.spinner("🚀 Explorer deployed... investigating..."):
                         try:
@@ -2180,20 +2137,20 @@ def display_object_details_dialog(obj_data):
                             )
                             if resp.status_code == 200:
                                 report = resp.json()
-                                if sb and mission_id:
+                                if mission_id:
                                     try:
-                                        cont = sb.table("contributions").insert({
+                                        cr = requests.post(f"{BACKEND_URL}/api/contributions", json={
                                             "object_designation": designation,
-                                            "entity_id": str(entity.id),
-                                            "entity_name": f"Explorer (dispatched by {entity_name})",
+                                            "user_id": entity["id"],
+                                            "user_name": f"Explorer (dispatched by {entity_name})",
                                             "kind": "mission_report",
                                             "body": report.get("findings_summary", ""),
                                             "structured_data": report.get("structured_data", {}),
                                             "source_references": report.get("sources_queried", []),
-                                        }).execute()
-                                        contrib_id = cont.data[0]["id"] if cont.data else None
+                                        }, timeout=10)
+                                        contrib_id = cr.json().get("id") if cr.status_code == 200 else None
 
-                                        sb.table("exploration_missions").update({
+                                        requests.put(f"{BACKEND_URL}/api/missions/{mission_id}", json={
                                             "status": "mission_complete",
                                             "findings_summary": report.get("findings_summary", ""),
                                             "data_gaps": report.get("data_gaps", []),
@@ -2202,11 +2159,12 @@ def display_object_details_dialog(obj_data):
                                             "contribution_id": contrib_id,
                                             "duration_seconds": report.get("duration_seconds"),
                                             "completed_at": datetime.utcnow().isoformat(),
-                                        }).eq("id", mission_id).execute()
+                                        }, timeout=10)
 
-                                        sb.table("entity_profiles").update({
-                                            "missions_completed": (profile.get("missions_completed", 0) or 0) + 1
-                                        }).eq("id", str(entity.id)).execute()
+                                        requests.post(
+                                            f"{BACKEND_URL}/api/users/{entity['id']}/increment-missions",
+                                            timeout=5,
+                                        )
                                     except Exception:
                                         pass
 
@@ -2214,21 +2172,21 @@ def display_object_details_dialog(obj_data):
                                 st.rerun()
                             else:
                                 st.error(f"Explorer mission failed (HTTP {resp.status_code})")
-                                if sb and mission_id:
+                                if mission_id:
                                     try:
-                                        sb.table("exploration_missions").update({
+                                        requests.put(f"{BACKEND_URL}/api/missions/{mission_id}", json={
                                             "status": "mission_failed",
                                             "completed_at": datetime.utcnow().isoformat(),
-                                        }).eq("id", mission_id).execute()
+                                        }, timeout=5)
                                     except Exception:
                                         pass
                         except Exception as e:
                             st.error(f"Explorer lost contact: {str(e)[:80]}")
-                            if sb and mission_id:
+                            if mission_id:
                                 try:
-                                    sb.table("exploration_missions").update({
+                                    requests.put(f"{BACKEND_URL}/api/missions/{mission_id}", json={
                                         "status": "mission_failed",
-                                    }).eq("id", mission_id).execute()
+                                    }, timeout=5)
                                 except Exception:
                                     pass
 
@@ -2236,7 +2194,7 @@ def display_object_details_dialog(obj_data):
                     st.caption("🔑 Log in to deploy explorers")
 
             st.markdown("##### Mission Dialogue")
-            _render_dialogue(designation, "mission_report", "mission comment", sb, entity)
+            _render_dialogue(designation, "mission_report", "mission comment")
 
 
 def objects_to_dataframe(objects):
@@ -2300,26 +2258,16 @@ def sync_vr_selection(designations: list, description: str):
 # ── Entity Authentication Sidebar ──────────────────────────────────
 def render_entity_auth_sidebar():
     """Render login/signup/profile in the sidebar. Returns entity dict or None."""
-    sb = get_supabase()
-    if sb is None:
-        st.sidebar.caption("🔒 Auth not configured")
-        return None
-
     if st.session_state.entity is not None:
-        profile = st.session_state.entity_profile or {}
-        name = profile.get('display_name', st.session_state.entity.email)
+        user = st.session_state.entity
+        name = user.get('display_name', user.get('email', '?'))
         st.sidebar.markdown("---")
         st.sidebar.markdown(f"**🛰 {name}**")
-        missions = profile.get('missions_completed', 0)
-        contribs = profile.get('contribution_count', 0)
+        missions = user.get('missions_completed', 0)
+        contribs = user.get('contribution_count', 0)
         st.sidebar.caption(f"{missions} missions | {contribs} contributions")
         if st.sidebar.button("Logout", key="entity_logout"):
-            try:
-                sb.auth.sign_out()
-            except Exception:
-                pass
             st.session_state.entity = None
-            st.session_state.entity_profile = None
             st.rerun()
         st.sidebar.markdown("---")
         return st.session_state.entity
@@ -2337,30 +2285,22 @@ def render_entity_auth_sidebar():
         if st.sidebar.button("Login", key="login_btn", type="primary"):
             if email and pw:
                 try:
-                    res = sb.auth.sign_in_with_password({"email": email, "password": pw})
-                    st.session_state.entity = res.user
-                    try:
-                        prof = sb.table("entity_profiles").select("*").eq(
-                            "id", str(res.user.id)
-                        ).single().execute()
-                        st.session_state.entity_profile = prof.data
-                    except Exception:
-                        st.session_state.entity_profile = {}
-                    st.rerun()
-                except Exception as e:
-                    err = str(e)
-                    if "Invalid login" in err or "invalid" in err.lower():
-                        st.sidebar.error("Invalid email or password")
-                    elif "Email not confirmed" in err or "not confirmed" in err.lower():
-                        st.sidebar.error("Please confirm your email first. Check your inbox.")
+                    resp = requests.post(f"{BACKEND_URL}/api/auth/login",
+                                         json={"email": email, "password": pw}, timeout=10)
+                    rj = resp.json()
+                    if resp.status_code == 200 and rj.get("ok"):
+                        st.session_state.entity = rj["user"]
+                        st.rerun()
                     else:
-                        st.sidebar.error(f"Login failed: {err[:80]}")
+                        st.sidebar.error(rj.get("error", "Login failed"))
+                except Exception as e:
+                    st.sidebar.error(f"Login failed: {str(e)[:80]}")
             else:
                 st.sidebar.warning("Enter email and password")
     elif auth_action == "Sign Up":
         new_name = st.sidebar.text_input("Display Name", key="signup_name")
         new_email = st.sidebar.text_input("Email", key="signup_email")
-        new_pw = st.sidebar.text_input("Password", type="password", key="signup_pw")
+        new_pw = st.sidebar.text_input("Password (min 6 chars)", type="password", key="signup_pw")
         affiliation = st.sidebar.text_input(
             "Affiliation (optional)",
             placeholder="e.g. Backyard Observatory, UK",
@@ -2369,19 +2309,15 @@ def render_entity_auth_sidebar():
         if st.sidebar.button("Sign Up", key="signup_btn", type="primary"):
             if new_name and new_email and new_pw:
                 try:
-                    res = sb.auth.sign_up({"email": new_email, "password": new_pw})
-                    if res.user:
-                        try:
-                            sb.table("entity_profiles").insert({
-                                "id": str(res.user.id),
-                                "display_name": new_name,
-                                "affiliation": affiliation or None,
-                                "contribution_count": 0,
-                                "missions_completed": 0,
-                            }).execute()
-                        except Exception:
-                            pass
-                        st.sidebar.success("Check your email to confirm, then log in.")
+                    resp = requests.post(f"{BACKEND_URL}/api/auth/signup", json={
+                        "email": new_email, "password": new_pw,
+                        "display_name": new_name, "affiliation": affiliation,
+                    }, timeout=10)
+                    rj = resp.json()
+                    if resp.status_code == 200 and rj.get("ok"):
+                        st.sidebar.success("Check your email to verify, then log in.")
+                    else:
+                        st.sidebar.error(rj.get("error", "Sign up failed"))
                 except Exception as e:
                     st.sidebar.error(f"Sign up failed: {str(e)[:80]}")
             else:
@@ -2391,8 +2327,9 @@ def render_entity_auth_sidebar():
         if st.sidebar.button("Send Reset Link", key="reset_btn", type="primary"):
             if reset_email:
                 try:
-                    sb.auth.reset_password_email(reset_email)
-                    st.sidebar.success("Password reset link sent. Check your email.")
+                    requests.post(f"{BACKEND_URL}/api/auth/forgot-password",
+                                  json={"email": reset_email}, timeout=10)
+                    st.sidebar.success("If that email exists, a reset link has been sent.")
                 except Exception as e:
                     st.sidebar.error(f"Failed: {str(e)[:80]}")
             else:
@@ -2410,35 +2347,21 @@ def main():
     st.markdown("### Space-Based Data Centre for Intelligent Entities")
 
     # Station status bar
-    sb_client = get_supabase()
     station_cols = st.columns(4)
-    if sb_client:
-        try:
-            entity_count = sb_client.table("entity_profiles").select(
-                "id", count="exact"
-            ).execute().count or 0
-        except Exception:
-            entity_count = 0
-        try:
-            mission_count = sb_client.table("exploration_missions").select(
-                "id", count="exact"
-            ).eq("status", "mission_complete").execute().count or 0
-        except Exception:
-            mission_count = 0
-        try:
-            contrib_count = sb_client.table("contributions").select(
-                "id", count="exact"
-            ).execute().count or 0
-        except Exception:
-            contrib_count = 0
-        station_cols[0].metric("Entities Aboard", entity_count)
-        station_cols[1].metric("Missions Completed", mission_count)
-        station_cols[2].metric("Knowledge Entries", contrib_count)
-        station_cols[3].metric("Station Status", "🟢 Online")
-    else:
+    try:
+        stats_resp = requests.get(f"{BACKEND_URL}/api/stats/community", timeout=5)
+        if stats_resp.status_code == 200:
+            stats = stats_resp.json()
+            station_cols[0].metric("Entities Aboard", stats.get("entities", 0))
+            station_cols[1].metric("Missions Completed", stats.get("missions", 0))
+            station_cols[2].metric("Knowledge Entries", stats.get("contributions", 0))
+            station_cols[3].metric("Station Status", "🟢 Online")
+        else:
+            raise ValueError("stats unavailable")
+    except Exception:
         station_cols[0].metric("Station Status", "🟢 Online")
         station_cols[1].metric("Mode", "Local Dev")
-        station_cols[2].metric("Auth", "Not Configured")
+        station_cols[2].metric("Auth", "Ready")
         station_cols[3].metric("Backend", BACKEND_URL.split("//")[-1])
 
     # Test objects info expander

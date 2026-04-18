@@ -5,15 +5,22 @@ Solar System Small Bodies Explorer
 Main Flask application for exploring under-researched small solar system objects
 """
 
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, make_response
 from flask_cors import CORS
 import requests
 import json
 import time
+import uuid
+import sqlite3
+import smtplib
+import threading
 from datetime import datetime, timedelta
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 import os
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 CORS(app)
@@ -22,6 +29,617 @@ CORS(app)
 CACHE_DIR = 'cache'
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR)
+
+# ============================================================================
+# DATABASE (SQLite)
+# ============================================================================
+
+DB_PATH = os.path.join(CACHE_DIR, 'facility.db')
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+def init_db():
+    conn = get_db()
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            email TEXT UNIQUE NOT NULL COLLATE NOCASE,
+            display_name TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            affiliation TEXT,
+            email_verified INTEGER DEFAULT 0,
+            verify_token TEXT,
+            reset_token TEXT,
+            reset_token_expires TEXT,
+            contribution_count INTEGER DEFAULT 0,
+            missions_completed INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS contributions (
+            id TEXT PRIMARY KEY,
+            object_designation TEXT NOT NULL,
+            user_id TEXT REFERENCES users(id),
+            user_name TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('comment','observation','correction','mission_report')),
+            body TEXT,
+            structured_data TEXT,
+            parent_id TEXT REFERENCES contributions(id),
+            source_references TEXT,
+            status TEXT DEFAULT 'published',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_contrib_object ON contributions(object_designation);
+        CREATE INDEX IF NOT EXISTS idx_contrib_kind ON contributions(kind);
+        CREATE INDEX IF NOT EXISTS idx_contrib_parent ON contributions(parent_id);
+
+        CREATE TABLE IF NOT EXISTS exploration_missions (
+            id TEXT PRIMARY KEY,
+            object_designation TEXT NOT NULL,
+            requested_by TEXT REFERENCES users(id),
+            requested_by_name TEXT NOT NULL,
+            status TEXT DEFAULT 'deploying',
+            sources_queried TEXT,
+            findings_summary TEXT,
+            data_gaps TEXT,
+            completeness_score REAL,
+            contribution_id TEXT REFERENCES contributions(id),
+            duration_seconds REAL,
+            started_at TEXT DEFAULT (datetime('now')),
+            completed_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_missions_object ON exploration_missions(object_designation);
+    """)
+    conn.close()
+
+init_db()
+
+# ============================================================================
+# SMTP EMAIL HELPER
+# ============================================================================
+
+SMTP_HOST = os.environ.get("SMTP_HOST", "mail.zoomoot.com")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
+SMTP_USER = os.environ.get("SMTP_USER", "info@zoomoot.com")
+SMTP_PASS = os.environ.get("SMTP_PASS", "")
+SITE_URL = os.environ.get("SITE_URL", "http://116.203.54.210")
+BACKEND_URL_EXT = os.environ.get("BACKEND_URL_EXT", SITE_URL)
+NOTIFICATION_EMAIL = os.environ.get("NOTIFICATION_EMAIL", "info@zoomoot.com")
+
+
+def _send_email(to_email, subject, html_body):
+    """Send an email via SMTP in a background thread."""
+    if not SMTP_PASS:
+        print(f"[SMTP] No SMTP_PASS set, skipping email to {to_email}: {subject}")
+        return
+
+    def _do_send():
+        try:
+            msg = MIMEMultipart("alternative")
+            msg["From"] = f"Solar System Facility <{SMTP_USER}>"
+            msg["To"] = to_email
+            msg["Subject"] = subject
+            msg.attach(MIMEText(html_body, "html"))
+
+            if SMTP_PORT == 465:
+                with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=15) as srv:
+                    srv.login(SMTP_USER, SMTP_PASS)
+                    srv.send_message(msg)
+            else:
+                with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as srv:
+                    srv.starttls()
+                    srv.login(SMTP_USER, SMTP_PASS)
+                    srv.send_message(msg)
+            print(f"[SMTP] Sent to {to_email}: {subject}")
+        except Exception as e:
+            print(f"[SMTP] Failed to send to {to_email}: {e}")
+
+    threading.Thread(target=_do_send, daemon=True).start()
+
+
+def _send_verification_email(email, display_name, token):
+    link = f"{BACKEND_URL_EXT}/api/auth/verify?token={token}"
+    _send_email(email, "Verify your Solar System Facility account", f"""
+        <h2>Welcome to the Solar System Facility, {display_name}!</h2>
+        <p>Click the link below to verify your email address and activate your account:</p>
+        <p><a href="{link}" style="display:inline-block;padding:12px 24px;
+            background:#4a9eff;color:white;text-decoration:none;border-radius:6px;
+            font-weight:bold;">Verify Email</a></p>
+        <p>Or copy this link: <br><code>{link}</code></p>
+        <hr>
+        <p style="color:#888;font-size:0.85em;">Solar System Facility — Space-Based Data Centre for Intelligent Entities</p>
+    """)
+
+
+def _send_reset_email(email, token):
+    link = f"{BACKEND_URL_EXT}/api/auth/reset?token={token}"
+    _send_email(email, "Reset your Solar System Facility password", f"""
+        <h2>Password Reset</h2>
+        <p>Click the link below to reset your password. This link expires in 1 hour.</p>
+        <p><a href="{link}" style="display:inline-block;padding:12px 24px;
+            background:#4a9eff;color:white;text-decoration:none;border-radius:6px;
+            font-weight:bold;">Reset Password</a></p>
+        <p>Or copy this link: <br><code>{link}</code></p>
+        <p>If you didn't request this, ignore this email.</p>
+        <hr>
+        <p style="color:#888;font-size:0.85em;">Solar System Facility</p>
+    """)
+
+
+def _send_contribution_notification(contribution):
+    """Notify info@zoomoot.com about a new contribution."""
+    kind_labels = {
+        "comment": "Discussion Comment",
+        "observation": "Observation Report",
+        "correction": "Data Correction",
+        "mission_report": "Mission Report",
+    }
+    kind_label = kind_labels.get(contribution["kind"], contribution["kind"])
+    is_reply = bool(contribution.get("parent_id"))
+    prefix = "Reply" if is_reply else "New"
+
+    body_parts = [
+        f"<h2>{prefix} {kind_label}</h2>",
+        f"<p><strong>Object:</strong> {contribution['object_designation']}</p>",
+        f"<p><strong>From:</strong> {contribution['user_name']}</p>",
+    ]
+    if contribution.get("body"):
+        body_parts.append(f"<h3>Content</h3><p>{contribution['body']}</p>")
+    if contribution.get("structured_data"):
+        try:
+            sd = json.loads(contribution["structured_data"]) if isinstance(
+                contribution["structured_data"], str
+            ) else contribution["structured_data"]
+            if sd:
+                body_parts.append(
+                    f"<h3>Data</h3><pre>{json.dumps(sd, indent=2)}</pre>"
+                )
+        except Exception:
+            pass
+    body_parts.append(f'<hr><p><a href="{SITE_URL}">Open Solar System Facility</a></p>')
+
+    _send_email(
+        NOTIFICATION_EMAIL,
+        f"[SSF] {prefix} {kind_label}: {contribution['object_designation']}",
+        "\n".join(body_parts),
+    )
+
+
+# ============================================================================
+# AUTH API ENDPOINTS
+# ============================================================================
+
+@app.route('/api/auth/signup', methods=['POST'])
+def auth_signup():
+    data = request.json or {}
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password", "")
+    display_name = (data.get("display_name") or "").strip()
+    affiliation = (data.get("affiliation") or "").strip() or None
+
+    if not email or not password or not display_name:
+        return jsonify({"error": "Email, password, and display name are required"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "Password must be at least 6 characters"}), 400
+
+    user_id = str(uuid.uuid4())
+    verify_token = str(uuid.uuid4())
+    pw_hash = generate_password_hash(password)
+
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO users (id, email, display_name, password_hash, affiliation, verify_token) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, email, display_name, pw_hash, affiliation, verify_token),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"error": "An account with this email already exists"}), 409
+    conn.close()
+
+    _send_verification_email(email, display_name, verify_token)
+    return jsonify({"ok": True, "message": "Account created. Check your email to verify."})
+
+
+@app.route('/api/auth/verify')
+def auth_verify():
+    token = request.args.get("token", "")
+    if not token:
+        return "<h2>Invalid link</h2>", 400
+
+    conn = get_db()
+    user = conn.execute(
+        "SELECT id, display_name, email_verified FROM users WHERE verify_token = ?",
+        (token,),
+    ).fetchone()
+
+    if not user:
+        conn.close()
+        return make_response(f"""
+            <html><body style="font-family:sans-serif;text-align:center;padding:60px;">
+            <h2>Invalid or expired verification link</h2>
+            <p>This link may have already been used.</p>
+            <p><a href="{SITE_URL}">Go to Solar System Facility</a></p>
+            </body></html>
+        """)
+
+    if not user["email_verified"]:
+        conn.execute(
+            "UPDATE users SET email_verified = 1, verify_token = NULL WHERE id = ?",
+            (user["id"],),
+        )
+        conn.commit()
+    conn.close()
+
+    return make_response(f"""
+        <html><body style="font-family:sans-serif;text-align:center;padding:60px;">
+        <h1>Email Verified!</h1>
+        <p>Welcome aboard, <strong>{user['display_name']}</strong>.</p>
+        <p>You can now <a href="{SITE_URL}">log in to the Solar System Facility</a>.</p>
+        </body></html>
+    """)
+
+
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login():
+    data = request.json or {}
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password", "")
+
+    if not email or not password:
+        return jsonify({"error": "Email and password are required"}), 400
+
+    conn = get_db()
+    user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    conn.close()
+
+    if not user or not check_password_hash(user["password_hash"], password):
+        return jsonify({"error": "Invalid email or password"}), 401
+
+    if not user["email_verified"]:
+        return jsonify({"error": "Please verify your email first. Check your inbox."}), 403
+
+    return jsonify({
+        "ok": True,
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "display_name": user["display_name"],
+            "affiliation": user["affiliation"],
+            "contribution_count": user["contribution_count"],
+            "missions_completed": user["missions_completed"],
+        },
+    })
+
+
+@app.route('/api/auth/forgot-password', methods=['POST'])
+def auth_forgot_password():
+    data = request.json or {}
+    email = (data.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"error": "Email is required"}), 400
+
+    conn = get_db()
+    user = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+    if user:
+        reset_token = str(uuid.uuid4())
+        expires = (datetime.utcnow() + timedelta(hours=1)).isoformat()
+        conn.execute(
+            "UPDATE users SET reset_token = ?, reset_token_expires = ? WHERE id = ?",
+            (reset_token, expires, user["id"]),
+        )
+        conn.commit()
+        _send_reset_email(email, reset_token)
+    conn.close()
+    return jsonify({"ok": True, "message": "If that email exists, a reset link has been sent."})
+
+
+@app.route('/api/auth/reset', methods=['GET'])
+def auth_reset_form():
+    token = request.args.get("token", "")
+    if not token:
+        return "<h2>Invalid link</h2>", 400
+
+    conn = get_db()
+    user = conn.execute(
+        "SELECT id, reset_token_expires FROM users WHERE reset_token = ?",
+        (token,),
+    ).fetchone()
+    conn.close()
+
+    if not user:
+        return make_response(f"""
+            <html><body style="font-family:sans-serif;text-align:center;padding:60px;">
+            <h2>Invalid or expired reset link</h2>
+            <p><a href="{SITE_URL}">Go to Solar System Facility</a></p>
+            </body></html>
+        """)
+
+    if user["reset_token_expires"]:
+        try:
+            exp = datetime.fromisoformat(user["reset_token_expires"])
+            if datetime.utcnow() > exp:
+                return make_response(f"""
+                    <html><body style="font-family:sans-serif;text-align:center;padding:60px;">
+                    <h2>This reset link has expired</h2>
+                    <p>Please request a new one from the
+                    <a href="{SITE_URL}">Solar System Facility</a>.</p>
+                    </body></html>
+                """)
+        except Exception:
+            pass
+
+    return make_response(f"""
+        <html><body style="font-family:sans-serif;max-width:400px;margin:60px auto;padding:20px;">
+        <h2>Reset Your Password</h2>
+        <form method="POST" action="/api/auth/reset">
+            <input type="hidden" name="token" value="{token}">
+            <p><label>New Password<br>
+                <input type="password" name="password" minlength="6"
+                    required style="width:100%;padding:8px;margin-top:4px;">
+            </label></p>
+            <p><label>Confirm Password<br>
+                <input type="password" name="password_confirm" minlength="6"
+                    required style="width:100%;padding:8px;margin-top:4px;">
+            </label></p>
+            <p><button type="submit" style="padding:10px 24px;background:#4a9eff;
+                color:white;border:none;border-radius:6px;cursor:pointer;font-size:1em;">
+                Set New Password</button></p>
+        </form>
+        </body></html>
+    """)
+
+
+@app.route('/api/auth/reset', methods=['POST'])
+def auth_reset_submit():
+    token = request.form.get("token") or (request.json or {}).get("token", "")
+    password = request.form.get("password") or (request.json or {}).get("password", "")
+    password_confirm = request.form.get("password_confirm") or password
+
+    if not token or not password:
+        return "<h2>Missing token or password</h2>", 400
+    if password != password_confirm:
+        return "<h2>Passwords do not match</h2><p>Go back and try again.</p>", 400
+    if len(password) < 6:
+        return "<h2>Password must be at least 6 characters</h2>", 400
+
+    conn = get_db()
+    user = conn.execute(
+        "SELECT id, reset_token_expires FROM users WHERE reset_token = ?",
+        (token,),
+    ).fetchone()
+
+    if not user:
+        conn.close()
+        return make_response(f"""
+            <html><body style="font-family:sans-serif;text-align:center;padding:60px;">
+            <h2>Invalid or expired reset link</h2>
+            <p><a href="{SITE_URL}">Go to Solar System Facility</a></p>
+            </body></html>
+        """)
+
+    if user["reset_token_expires"]:
+        try:
+            if datetime.utcnow() > datetime.fromisoformat(user["reset_token_expires"]):
+                conn.close()
+                return "<h2>This reset link has expired</h2>", 400
+        except Exception:
+            pass
+
+    conn.execute(
+        "UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires = NULL WHERE id = ?",
+        (generate_password_hash(password), user["id"]),
+    )
+    conn.commit()
+    conn.close()
+
+    return make_response(f"""
+        <html><body style="font-family:sans-serif;text-align:center;padding:60px;">
+        <h1>Password Updated!</h1>
+        <p>You can now <a href="{SITE_URL}">log in with your new password</a>.</p>
+        </body></html>
+    """)
+
+
+# ============================================================================
+# CONTRIBUTIONS API ENDPOINTS
+# ============================================================================
+
+@app.route('/api/contributions', methods=['GET'])
+def list_contributions():
+    obj = request.args.get("object", "")
+    kind = request.args.get("kind", "")
+    limit = min(int(request.args.get("limit", "200")), 500)
+
+    if not obj:
+        return jsonify({"error": "object parameter required"}), 400
+
+    conn = get_db()
+    if kind:
+        rows = conn.execute(
+            "SELECT * FROM contributions WHERE object_designation = ? AND kind = ? "
+            "ORDER BY created_at ASC LIMIT ?",
+            (obj, kind, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM contributions WHERE object_designation = ? "
+            "ORDER BY created_at ASC LIMIT ?",
+            (obj, limit),
+        ).fetchall()
+    conn.close()
+
+    results = []
+    for r in rows:
+        entry = dict(r)
+        for json_field in ("structured_data", "source_references"):
+            if entry.get(json_field):
+                try:
+                    entry[json_field] = json.loads(entry[json_field])
+                except Exception:
+                    pass
+        results.append(entry)
+    return jsonify({"contributions": results})
+
+
+@app.route('/api/contributions', methods=['POST'])
+def create_contribution():
+    data = request.json or {}
+    obj = data.get("object_designation", "")
+    user_id = data.get("user_id", "")
+    user_name = data.get("user_name", "")
+    kind = data.get("kind", "")
+    body = data.get("body", "")
+    parent_id = data.get("parent_id") or None
+    structured_data = data.get("structured_data")
+    source_refs = data.get("source_references")
+
+    if not obj or not user_id or not user_name or not kind:
+        return jsonify({"error": "object_designation, user_id, user_name, and kind are required"}), 400
+
+    contrib_id = str(uuid.uuid4())
+    sd_json = json.dumps(structured_data) if structured_data else None
+    sr_json = json.dumps(source_refs) if source_refs else None
+
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO contributions (id, object_designation, user_id, user_name, kind, body, "
+        "structured_data, parent_id, source_references) VALUES (?,?,?,?,?,?,?,?,?)",
+        (contrib_id, obj, user_id, user_name, kind, body, sd_json, parent_id, sr_json),
+    )
+    conn.execute(
+        "UPDATE users SET contribution_count = contribution_count + 1 WHERE id = ?",
+        (user_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    _send_contribution_notification({
+        "object_designation": obj,
+        "user_name": user_name,
+        "kind": kind,
+        "body": body,
+        "structured_data": structured_data,
+        "parent_id": parent_id,
+    })
+
+    return jsonify({"ok": True, "id": contrib_id})
+
+
+@app.route('/api/missions', methods=['GET'])
+def list_missions():
+    obj = request.args.get("object", "")
+    if not obj:
+        return jsonify({"error": "object parameter required"}), 400
+
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM exploration_missions WHERE object_designation = ? "
+        "ORDER BY started_at DESC LIMIT 20",
+        (obj,),
+    ).fetchall()
+    conn.close()
+
+    results = []
+    for r in rows:
+        entry = dict(r)
+        for json_field in ("sources_queried", "data_gaps"):
+            if entry.get(json_field):
+                try:
+                    entry[json_field] = json.loads(entry[json_field])
+                except Exception:
+                    pass
+        results.append(entry)
+    return jsonify({"missions": results})
+
+
+@app.route('/api/missions', methods=['POST'])
+def create_mission():
+    data = request.json or {}
+    mission_id = str(uuid.uuid4())
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO exploration_missions (id, object_designation, requested_by, "
+        "requested_by_name, status) VALUES (?,?,?,?,?)",
+        (mission_id, data.get("object_designation", ""),
+         data.get("requested_by", ""), data.get("requested_by_name", ""), "deploying"),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "id": mission_id})
+
+
+@app.route('/api/missions/<mission_id>', methods=['PUT'])
+def update_mission(mission_id):
+    data = request.json or {}
+    fields = []
+    values = []
+    for key in ("status", "findings_summary", "completeness_score",
+                "contribution_id", "duration_seconds", "completed_at"):
+        if key in data:
+            fields.append(f"{key} = ?")
+            values.append(data[key])
+    for json_key in ("sources_queried", "data_gaps"):
+        if json_key in data:
+            fields.append(f"{json_key} = ?")
+            values.append(json.dumps(data[json_key]))
+
+    if not fields:
+        return jsonify({"error": "No fields to update"}), 400
+
+    values.append(mission_id)
+    conn = get_db()
+    conn.execute(f"UPDATE exploration_missions SET {', '.join(fields)} WHERE id = ?", values)
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route('/api/users/<user_id>', methods=['GET'])
+def get_user_profile(user_id):
+    conn = get_db()
+    user = conn.execute(
+        "SELECT id, email, display_name, affiliation, contribution_count, "
+        "missions_completed, created_at FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    conn.close()
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify(dict(user))
+
+
+@app.route('/api/users/<user_id>/increment-missions', methods=['POST'])
+def increment_missions(user_id):
+    conn = get_db()
+    conn.execute(
+        "UPDATE users SET missions_completed = missions_completed + 1 WHERE id = ?",
+        (user_id,),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route('/api/stats/community')
+def community_stats():
+    conn = get_db()
+    users = conn.execute("SELECT COUNT(*) FROM users WHERE email_verified = 1").fetchone()[0]
+    missions = conn.execute(
+        "SELECT COUNT(*) FROM exploration_missions WHERE status = 'mission_complete'"
+    ).fetchone()[0]
+    contribs = conn.execute("SELECT COUNT(*) FROM contributions").fetchone()[0]
+    conn.close()
+    return jsonify({"entities": users, "missions": missions, "contributions": contribs})
 
 # ============================================================================
 # DATA SOURCE INTEGRATIONS
