@@ -6,6 +6,7 @@ Interactive data science interface for exploring under-researched objects
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import pandas as pd
 import plotly.express as px
@@ -32,6 +33,53 @@ if 'selected_object' not in st.session_state:
     st.session_state.selected_object = None
 if 'entity' not in st.session_state:
     st.session_state.entity = None
+
+# ── Cookie-based persistent sessions ──────────────────────────────
+_COOKIE_NAME = "ssf_session"
+_COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
+
+
+def _set_session_cookie(token):
+    components.html(
+        f'<script>document.cookie="{_COOKIE_NAME}={token}; '
+        f'path=/; max-age={_COOKIE_MAX_AGE}; SameSite=Lax";</script>',
+        height=0,
+    )
+
+
+def _clear_session_cookie():
+    components.html(
+        f'<script>document.cookie="{_COOKIE_NAME}=; '
+        f'path=/; max-age=0; SameSite=Lax";</script>',
+        height=0,
+    )
+
+
+def _try_restore_session():
+    """If user has a session cookie but no active session_state, validate it."""
+    if st.session_state.entity is not None:
+        return
+    try:
+        cookies = st.context.cookies
+        token = cookies.get(_COOKIE_NAME, "")
+    except Exception:
+        return
+    if not token:
+        return
+    try:
+        resp = requests.get(
+            f"{BACKEND_URL}/api/auth/me", params={"token": token}, timeout=5
+        )
+        if resp.status_code == 200:
+            rj = resp.json()
+            if rj.get("ok"):
+                st.session_state.entity = rj["user"]
+                st.session_state["_session_token"] = token
+    except Exception:
+        pass
+
+
+_try_restore_session()
 st.set_page_config(
     page_title="Solar System Explorer",
     page_icon="🌌",
@@ -607,6 +655,8 @@ def display_object_details_dialog(obj_data):
                         rj = resp.json()
                         if resp.status_code == 200 and rj.get("ok"):
                             st.session_state.entity = rj["user"]
+                            st.session_state["_session_token"] = rj.get("session_token", "")
+                            _set_session_cookie(rj.get("session_token", ""))
                             st.rerun()
                         else:
                             st.error(rj.get("error", "Login failed"))
@@ -2271,7 +2321,16 @@ def render_entity_auth_sidebar():
         contribs = user.get('contribution_count', 0)
         st.sidebar.caption(f"{missions} missions | {contribs} contributions")
         if st.sidebar.button("Logout", key="entity_logout"):
+            token = st.session_state.get("_session_token", "")
+            if token:
+                try:
+                    requests.post(f"{BACKEND_URL}/api/auth/logout",
+                                  json={"session_token": token}, timeout=5)
+                except Exception:
+                    pass
             st.session_state.entity = None
+            st.session_state.pop("_session_token", None)
+            _clear_session_cookie()
             st.rerun()
         st.sidebar.markdown("---")
         return st.session_state.entity
@@ -2294,6 +2353,8 @@ def render_entity_auth_sidebar():
                     rj = resp.json()
                     if resp.status_code == 200 and rj.get("ok"):
                         st.session_state.entity = rj["user"]
+                        st.session_state["_session_token"] = rj.get("session_token", "")
+                        _set_session_cookie(rj.get("session_token", ""))
                         st.rerun()
                     else:
                         st.sidebar.error(rj.get("error", "Login failed"))

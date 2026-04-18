@@ -96,6 +96,16 @@ def init_db():
         );
 
         CREATE INDEX IF NOT EXISTS idx_missions_object ON exploration_missions(object_designation);
+
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id),
+            created_at TEXT DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
     """)
     conn.close()
 
@@ -338,6 +348,53 @@ def auth_verify():
     """)
 
 
+SESSION_DURATION_DAYS = 30
+
+
+def _create_session(user_id):
+    token = str(uuid.uuid4())
+    expires = (datetime.utcnow() + timedelta(days=SESSION_DURATION_DAYS)).isoformat()
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
+        (token, user_id, expires),
+    )
+    conn.commit()
+    conn.close()
+    return token
+
+
+def _validate_session(token):
+    """Return user dict if session is valid, else None."""
+    if not token:
+        return None
+    conn = get_db()
+    row = conn.execute(
+        "SELECT s.user_id, s.expires_at, u.id, u.email, u.display_name, "
+        "u.affiliation, u.contribution_count, u.missions_completed "
+        "FROM sessions s JOIN users u ON s.user_id = u.id "
+        "WHERE s.token = ?",
+        (token,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return None
+    if datetime.utcnow() > datetime.fromisoformat(row["expires_at"]):
+        conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        conn.commit()
+        conn.close()
+        return None
+    conn.close()
+    return {
+        "id": row["id"],
+        "email": row["email"],
+        "display_name": row["display_name"],
+        "affiliation": row["affiliation"],
+        "contribution_count": row["contribution_count"],
+        "missions_completed": row["missions_completed"],
+    }
+
+
 @app.route('/api/auth/login', methods=['POST'])
 def auth_login():
     data = request.json or {}
@@ -357,8 +414,11 @@ def auth_login():
     if not user["email_verified"]:
         return jsonify({"error": "Please verify your email first. Check your inbox."}), 403
 
+    session_token = _create_session(user["id"])
+
     return jsonify({
         "ok": True,
+        "session_token": session_token,
         "user": {
             "id": user["id"],
             "email": user["email"],
@@ -368,6 +428,28 @@ def auth_login():
             "missions_completed": user["missions_completed"],
         },
     })
+
+
+@app.route('/api/auth/me', methods=['GET'])
+def auth_me():
+    """Validate a session token and return the user, or 401."""
+    token = request.args.get("token", "")
+    user = _validate_session(token)
+    if not user:
+        return jsonify({"error": "Invalid or expired session"}), 401
+    return jsonify({"ok": True, "user": user})
+
+
+@app.route('/api/auth/logout', methods=['POST'])
+def auth_logout():
+    data = request.json or {}
+    token = data.get("session_token", "")
+    if token:
+        conn = get_db()
+        conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True})
 
 
 @app.route('/api/auth/forgot-password', methods=['POST'])
