@@ -106,7 +106,7 @@ init_db()
 # ============================================================================
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "mail.zoomoot.com")
-SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "info@zoomoot.com")
 SMTP_PASS = os.environ.get("SMTP_PASS", "")
 SITE_URL = os.environ.get("SITE_URL", "http://116.203.54.210")

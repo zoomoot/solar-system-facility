@@ -553,12 +553,16 @@ def spectral_colorscale(spec_class, albedo=None):
     if albedo is not None:
         try:
             a = float(albedo)
-            brightness = 0.6 + 0.8 * min(a / 0.5, 1.0)
+            if a == a:  # False for NaN
+                brightness = 0.6 + 0.8 * min(a / 0.5, 1.0)
         except (ValueError, TypeError):
             pass
 
     def clamp(v):
-        return max(0, min(255, int(v * brightness)))
+        try:
+            return max(0, min(255, int(v * brightness)))
+        except (ValueError, OverflowError):
+            return 128
 
     lo_s = f"rgb({clamp(lo[0])},{clamp(lo[1])},{clamp(lo[2])})"
     hi_s = f"rgb({clamp(hi[0])},{clamp(hi[1])},{clamp(hi[2])})"
