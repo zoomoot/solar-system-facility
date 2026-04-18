@@ -174,7 +174,13 @@ def _send_reset_email(email, token):
 
 
 def _send_contribution_notification(contribution):
-    """Notify info@zoomoot.com about a new contribution."""
+    """Notify all previous contributors on the same object, plus info@zoomoot.com.
+
+    - Every user who has previously contributed to this object gets notified
+    - If this is a reply, the parent post author is always included
+    - The author of the new contribution is excluded (they already know)
+    - info@zoomoot.com is always CC'd
+    """
     kind_labels = {
         "comment": "Discussion Comment",
         "observation": "Observation Report",
@@ -184,14 +190,17 @@ def _send_contribution_notification(contribution):
     kind_label = kind_labels.get(contribution["kind"], contribution["kind"])
     is_reply = bool(contribution.get("parent_id"))
     prefix = "Reply" if is_reply else "New"
+    obj = contribution["object_designation"]
+    author_id = contribution.get("user_id", "")
 
     body_parts = [
-        f"<h2>{prefix} {kind_label}</h2>",
-        f"<p><strong>Object:</strong> {contribution['object_designation']}</p>",
+        f"<h2>{prefix} {kind_label} on {obj}</h2>",
         f"<p><strong>From:</strong> {contribution['user_name']}</p>",
     ]
     if contribution.get("body"):
-        body_parts.append(f"<h3>Content</h3><p>{contribution['body']}</p>")
+        body_parts.append(f"<blockquote style='border-left:3px solid #4a9eff;"
+                          f"padding:8px 12px;margin:12px 0;color:#ddd;'>"
+                          f"{contribution['body']}</blockquote>")
     if contribution.get("structured_data"):
         try:
             sd = json.loads(contribution["structured_data"]) if isinstance(
@@ -203,13 +212,53 @@ def _send_contribution_notification(contribution):
                 )
         except Exception:
             pass
-    body_parts.append(f'<hr><p><a href="{SITE_URL}">Open Solar System Facility</a></p>')
-
-    _send_email(
-        NOTIFICATION_EMAIL,
-        f"[SSF] {prefix} {kind_label}: {contribution['object_designation']}",
-        "\n".join(body_parts),
+    body_parts.append(
+        f'<p><a href="{SITE_URL}" style="display:inline-block;padding:10px 20px;'
+        f'background:#4a9eff;color:white;text-decoration:none;border-radius:6px;'
+        f'font-weight:bold;">Open Solar System Facility</a></p>'
     )
+    body_parts.append(
+        f'<hr><p style="color:#888;font-size:0.85em;">'
+        f'You received this because you contributed to {obj} on the Solar System Facility. '
+        f'</p>'
+    )
+    html_body = "\n".join(body_parts)
+    subject = f"[SSF] {prefix} {kind_label}: {obj}"
+
+    # Collect email addresses of all other contributors on this object
+    conn = get_db()
+    recipients = set()
+
+    # All distinct users who contributed to this object (except the author)
+    rows = conn.execute(
+        "SELECT DISTINCT u.id, u.email FROM users u "
+        "INNER JOIN contributions c ON c.user_id = u.id "
+        "WHERE c.object_designation = ? AND u.id != ? AND u.email_verified = 1",
+        (obj, author_id),
+    ).fetchall()
+    for r in rows:
+        recipients.add(r["email"])
+
+    # If it's a reply, ensure the parent post author is included
+    if is_reply and contribution.get("parent_id"):
+        parent = conn.execute(
+            "SELECT u.email FROM users u "
+            "INNER JOIN contributions c ON c.user_id = u.id "
+            "WHERE c.id = ? AND u.id != ? AND u.email_verified = 1",
+            (contribution["parent_id"], author_id),
+        ).fetchone()
+        if parent:
+            recipients.add(parent["email"])
+
+    conn.close()
+
+    # Send individual notification to each subscriber
+    for email in recipients:
+        _send_email(email, subject, html_body)
+
+    # Always CC info@zoomoot.com (skip if it's already in recipients)
+    if NOTIFICATION_EMAIL not in recipients:
+        _send_email(NOTIFICATION_EMAIL, subject, html_body)
 
 
 # ============================================================================
@@ -525,6 +574,7 @@ def create_contribution():
 
     _send_contribution_notification({
         "object_designation": obj,
+        "user_id": user_id,
         "user_name": user_name,
         "kind": kind,
         "body": body,
