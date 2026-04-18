@@ -89,6 +89,134 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
+# ── Threaded dialogue helpers ──────────────────────────────────────
+def _build_thread_tree(posts):
+    """Organise flat list of posts into a tree structure using parent_id."""
+    by_id = {p["id"]: {**p, "_children": []} for p in posts}
+    roots = []
+    for p in posts:
+        node = by_id[p["id"]]
+        pid = p.get("parent_id")
+        if pid and pid in by_id:
+            by_id[pid]["_children"].append(node)
+        else:
+            roots.append(node)
+    return roots
+
+
+def _render_thread(node, designation, kind, depth=0):
+    """Recursively render a post and its replies with visual nesting."""
+    indent = "│  " * depth
+    sb = get_supabase()
+    entity = st.session_state.get("entity")
+
+    author = node.get("entity_name", "Unknown")
+    ts = (node.get("created_at") or "")[:16]
+    body = node.get("body") or ""
+    post_id = node["id"]
+
+    st.markdown(
+        f"<div style='margin-left:{depth * 24}px; padding:6px 0; "
+        f"border-left: {'2px solid #2a3f5f' if depth > 0 else 'none'}; "
+        f"padding-left: {'10px' if depth > 0 else '0'};'>"
+        f"<strong>{author}</strong> "
+        f"<span style='color:#888; font-size:0.85em;'>{ts}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    if body:
+        st.markdown(
+            f"<div style='margin-left:{depth * 24 + (10 if depth > 0 else 0)}px; "
+            f"padding-bottom:4px;'>{body}</div>",
+            unsafe_allow_html=True,
+        )
+
+    if entity and sb:
+        reply_key = f"reply_toggle_{kind}_{post_id}"
+        if reply_key not in st.session_state:
+            st.session_state[reply_key] = False
+
+        col_reply, _ = st.columns([1, 5])
+        with col_reply:
+            if st.button("↩ Reply", key=f"reply_btn_{kind}_{post_id}",
+                         type="secondary"):
+                st.session_state[reply_key] = not st.session_state[reply_key]
+
+        if st.session_state[reply_key]:
+            with st.form(key=f"reply_form_{kind}_{post_id}"):
+                reply_body = st.text_area(
+                    "Reply", key=f"reply_text_{kind}_{post_id}",
+                    placeholder="Write your reply...", height=80,
+                )
+                if st.form_submit_button("Post Reply"):
+                    if reply_body.strip():
+                        profile = st.session_state.get("entity_profile", {})
+                        try:
+                            sb.table("contributions").insert({
+                                "object_designation": designation,
+                                "entity_id": str(entity.id),
+                                "entity_name": profile.get("display_name", entity.email),
+                                "kind": kind,
+                                "body": reply_body.strip(),
+                                "parent_id": post_id,
+                            }).execute()
+                            st.session_state[reply_key] = False
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed: {str(e)[:80]}")
+
+    for child in node.get("_children", []):
+        _render_thread(child, designation, kind, depth + 1)
+
+
+def _render_dialogue(designation, kind, label_singular, sb, entity):
+    """Render a complete threaded dialogue for a given contribution kind."""
+    if not sb:
+        st.info("Community features require Supabase configuration.")
+        return
+
+    try:
+        posts = sb.table("contributions").select("*").eq(
+            "object_designation", designation
+        ).eq("kind", kind).order("created_at").limit(200).execute()
+        post_list = posts.data or []
+    except Exception:
+        post_list = []
+
+    if post_list:
+        tree = _build_thread_tree(post_list)
+        for root in tree:
+            _render_thread(root, designation, kind)
+            st.markdown("---")
+    else:
+        st.info(f"No {label_singular} yet. Be the first to contribute.")
+
+    if entity:
+        with st.form(key=f"new_{kind}_form_{designation}"):
+            new_body = st.text_area(
+                f"New {label_singular}",
+                key=f"new_{kind}_text_{designation}",
+                placeholder=f"Start a new {label_singular} thread...",
+            )
+            if st.form_submit_button(f"Post {label_singular.title()}"):
+                if new_body.strip():
+                    profile = st.session_state.get("entity_profile", {})
+                    try:
+                        sb.table("contributions").insert({
+                            "object_designation": designation,
+                            "entity_id": str(entity.id),
+                            "entity_name": profile.get("display_name", entity.email),
+                            "kind": kind,
+                            "body": new_body.strip(),
+                        }).execute()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed: {str(e)[:80]}")
+    else:
+        st.caption(f"🔑 Log in to post {label_singular}s")
+
+
 # Helper Functions
 @st.cache_data(ttl=3600)
 def fetch_objects(limit=100, source='jpl', filters=None):
@@ -474,6 +602,93 @@ def display_object_details_dialog(obj_data):
     
     st.markdown(f"### 🌠 {name}")
     st.markdown(f"**Designation:** {designation}")
+
+    # Gate: require authentication to view full object details
+    if st.session_state.entity is None:
+        st.markdown("---")
+        st.markdown("#### 🔒 Account Required")
+        st.markdown(
+            "Create a free account or log in to access full object details, "
+            "community discussion, and exploration tools."
+        )
+        sb = get_supabase()
+        if sb is None:
+            st.info("Authentication is not yet configured on this instance.")
+            return
+
+        gate_action = st.radio(
+            "Action", ["Login", "Sign Up", "Reset Password"],
+            horizontal=True, key="gate_auth_action", label_visibility="collapsed"
+        )
+        if gate_action == "Login":
+            g_email = st.text_input("Email", key="gate_login_email")
+            g_pw = st.text_input("Password", type="password", key="gate_login_pw")
+            if st.button("Login", key="gate_login_btn", type="primary"):
+                if g_email and g_pw:
+                    try:
+                        res = sb.auth.sign_in_with_password({"email": g_email, "password": g_pw})
+                        st.session_state.entity = res.user
+                        try:
+                            prof = sb.table("entity_profiles").select("*").eq(
+                                "id", str(res.user.id)
+                            ).single().execute()
+                            st.session_state.entity_profile = prof.data
+                        except Exception:
+                            st.session_state.entity_profile = {}
+                        st.rerun()
+                    except Exception as e:
+                        err = str(e)
+                        if "Invalid login" in err or "invalid" in err.lower():
+                            st.error("Invalid email or password")
+                        elif "Email not confirmed" in err or "not confirmed" in err.lower():
+                            st.error("Please confirm your email first. Check your inbox.")
+                        else:
+                            st.error(f"Login failed: {err[:80]}")
+                else:
+                    st.warning("Enter email and password")
+        elif gate_action == "Sign Up":
+            g_name = st.text_input("Display Name", key="gate_signup_name")
+            g_email = st.text_input("Email", key="gate_signup_email")
+            g_pw = st.text_input("Password", type="password", key="gate_signup_pw")
+            g_affil = st.text_input(
+                "Affiliation (optional)",
+                placeholder="e.g. Backyard Observatory, UK",
+                key="gate_signup_affil"
+            )
+            if st.button("Sign Up", key="gate_signup_btn", type="primary"):
+                if g_name and g_email and g_pw:
+                    try:
+                        res = sb.auth.sign_up({"email": g_email, "password": g_pw})
+                        if res.user:
+                            try:
+                                sb.table("entity_profiles").insert({
+                                    "id": str(res.user.id),
+                                    "display_name": g_name,
+                                    "affiliation": g_affil or None,
+                                    "contribution_count": 0,
+                                    "missions_completed": 0,
+                                }).execute()
+                            except Exception:
+                                pass
+                            st.success(
+                                "Account created! Check your email to verify, then log in."
+                            )
+                    except Exception as e:
+                        st.error(f"Sign up failed: {str(e)[:80]}")
+                else:
+                    st.warning("Name, email, and password required")
+        else:
+            g_email = st.text_input("Email", key="gate_reset_email")
+            if st.button("Send Reset Link", key="gate_reset_btn", type="primary"):
+                if g_email:
+                    try:
+                        sb.auth.reset_password_email(g_email)
+                        st.success("Password reset link sent. Check your email.")
+                    except Exception as e:
+                        st.error(f"Failed: {str(e)[:80]}")
+                else:
+                    st.warning("Enter your email address")
+        return
     
     # Fetch full API data (includes JPL, SsODNet, and Wikipedia)
     with st.spinner("Fetching detailed data from available sources (JPL, SsODNet, Wikipedia)..."):
@@ -1798,193 +2013,94 @@ def display_object_details_dialog(obj_data):
 
         # ── Discussion sub-tab ──
         with comm_tabs[0]:
-            if sb:
-                try:
-                    comments = sb.table("contributions").select("*").eq(
-                        "object_designation", designation
-                    ).eq("kind", "comment").order(
-                        "created_at", desc=True
-                    ).limit(50).execute()
-                    for c in (comments.data or []):
-                        with st.container():
-                            col_a, col_b = st.columns([3, 1])
-                            col_a.markdown(f"**{c.get('entity_name', 'Unknown')}**")
-                            col_b.caption(c.get('created_at', '')[:16])
-                            st.markdown(c.get('body', ''))
-                            st.markdown("---")
-                    if not comments.data:
-                        st.info("No discussion yet. Be the first to comment.")
-                except Exception as e:
-                    st.info("No discussion yet.")
-
-                if entity:
-                    with st.form(key=f"comment_form_{designation}"):
-                        comment_body = st.text_area(
-                            "Add a comment", key=f"comment_text_{designation}",
-                            placeholder="Share observations, questions, or analysis..."
-                        )
-                        if st.form_submit_button("Post Comment"):
-                            if comment_body.strip():
-                                profile = st.session_state.get("entity_profile", {})
-                                try:
-                                    sb.table("contributions").insert({
-                                        "object_designation": designation,
-                                        "entity_id": str(entity.id),
-                                        "entity_name": profile.get("display_name", entity.email),
-                                        "kind": "comment",
-                                        "body": comment_body.strip(),
-                                    }).execute()
-                                    st.success("Comment posted.")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Failed to post: {str(e)[:80]}")
-                else:
-                    st.caption("🔑 Log in to post comments")
-            else:
-                st.info("Community features require Supabase configuration.")
+            _render_dialogue(designation, "comment", "comment", sb, entity)
 
         # ── Observations sub-tab ──
         with comm_tabs[1]:
-            if sb:
-                try:
-                    obs = sb.table("contributions").select("*").eq(
-                        "object_designation", designation
-                    ).eq("kind", "observation").order(
-                        "created_at", desc=True
-                    ).limit(50).execute()
-                    if obs.data:
-                        obs_rows = []
-                        for o in obs.data:
-                            sd = o.get("structured_data") or {}
-                            obs_rows.append({
-                                "Entity": o.get("entity_name", "?"),
-                                "Date": sd.get("obs_date", "?"),
-                                "Telescope": sd.get("telescope", "?"),
-                                "Magnitude": sd.get("magnitude", ""),
-                                "Filter": sd.get("filter", ""),
-                                "Notes": (o.get("body") or "")[:60],
-                            })
-                        st.dataframe(pd.DataFrame(obs_rows), use_container_width=True, hide_index=True)
-                    else:
-                        st.info("No observations reported yet.")
-                except Exception:
-                    st.info("No observations reported yet.")
+            if sb and entity:
+                with st.form(key=f"obs_form_{designation}"):
+                    st.markdown("**Report an Observation**")
+                    obs_cols = st.columns(3)
+                    obs_date = obs_cols[0].date_input("Date", key=f"obs_date_{designation}")
+                    obs_telescope = obs_cols[1].text_input("Telescope", key=f"obs_tel_{designation}")
+                    obs_mag = obs_cols[2].text_input("Magnitude", key=f"obs_mag_{designation}")
+                    obs_cols2 = st.columns(3)
+                    obs_filter = obs_cols2[0].text_input("Filter/Band", key=f"obs_filt_{designation}")
+                    obs_seeing = obs_cols2[1].text_input("Seeing (arcsec)", key=f"obs_see_{designation}")
+                    obs_location = obs_cols2[2].text_input("Location", key=f"obs_loc_{designation}")
+                    obs_notes = st.text_area("Notes", key=f"obs_notes_{designation}")
 
-                if entity:
-                    with st.form(key=f"obs_form_{designation}"):
-                        st.markdown("**Report an Observation**")
-                        obs_cols = st.columns(3)
-                        obs_date = obs_cols[0].date_input("Date", key=f"obs_date_{designation}")
-                        obs_telescope = obs_cols[1].text_input("Telescope", key=f"obs_tel_{designation}")
-                        obs_mag = obs_cols[2].text_input("Magnitude", key=f"obs_mag_{designation}")
-                        obs_cols2 = st.columns(3)
-                        obs_filter = obs_cols2[0].text_input("Filter/Band", key=f"obs_filt_{designation}")
-                        obs_seeing = obs_cols2[1].text_input("Seeing (arcsec)", key=f"obs_see_{designation}")
-                        obs_location = obs_cols2[2].text_input("Location", key=f"obs_loc_{designation}")
-                        obs_notes = st.text_area("Notes", key=f"obs_notes_{designation}")
+                    if st.form_submit_button("Submit Observation"):
+                        profile = st.session_state.get("entity_profile", {})
+                        structured = {
+                            "obs_date": str(obs_date),
+                            "telescope": obs_telescope,
+                            "magnitude": obs_mag,
+                            "filter": obs_filter,
+                            "seeing_arcsec": obs_seeing,
+                            "location": obs_location,
+                        }
+                        try:
+                            sb.table("contributions").insert({
+                                "object_designation": designation,
+                                "entity_id": str(entity.id),
+                                "entity_name": profile.get("display_name", entity.email),
+                                "kind": "observation",
+                                "body": obs_notes,
+                                "structured_data": structured,
+                            }).execute()
+                            st.success("Observation recorded.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed: {str(e)[:80]}")
 
-                        if st.form_submit_button("Submit Observation"):
+            st.markdown("##### Observation Dialogue")
+            _render_dialogue(designation, "observation", "observation", sb, entity)
+
+        # ── Corrections sub-tab ──
+        with comm_tabs[2]:
+            if sb and entity:
+                with st.form(key=f"corr_form_{designation}"):
+                    st.markdown("**Suggest a Data Correction**")
+                    corr_field = st.selectbox("Field", [
+                        "diameter", "albedo", "rotation_period", "spectral_type",
+                        "mass", "density", "absolute_magnitude", "other"
+                    ], key=f"corr_field_{designation}")
+                    corr_cols = st.columns(2)
+                    corr_current = corr_cols[0].text_input("Current value", key=f"corr_cur_{designation}")
+                    corr_suggested = corr_cols[1].text_input("Suggested value", key=f"corr_sug_{designation}")
+                    corr_source = st.text_input(
+                        "Source reference (DOI, URL, etc.)",
+                        key=f"corr_src_{designation}"
+                    )
+                    corr_justification = st.text_area("Justification", key=f"corr_just_{designation}")
+
+                    if st.form_submit_button("Submit Correction"):
+                        if corr_suggested.strip():
                             profile = st.session_state.get("entity_profile", {})
-                            structured = {
-                                "obs_date": str(obs_date),
-                                "telescope": obs_telescope,
-                                "magnitude": obs_mag,
-                                "filter": obs_filter,
-                                "seeing_arcsec": obs_seeing,
-                                "location": obs_location,
-                            }
                             try:
                                 sb.table("contributions").insert({
                                     "object_designation": designation,
                                     "entity_id": str(entity.id),
                                     "entity_name": profile.get("display_name", entity.email),
-                                    "kind": "observation",
-                                    "body": obs_notes,
-                                    "structured_data": structured,
+                                    "kind": "correction",
+                                    "body": corr_justification,
+                                    "structured_data": {
+                                        "field": corr_field,
+                                        "current": corr_current,
+                                        "suggested": corr_suggested,
+                                    },
+                                    "source_references": [corr_source] if corr_source.strip() else [],
                                 }).execute()
-                                st.success("Observation recorded.")
+                                st.success("Correction submitted for review.")
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Failed: {str(e)[:80]}")
-                else:
-                    st.caption("🔑 Log in to submit observations")
-            else:
-                st.info("Community features require Supabase configuration.")
+                        else:
+                            st.warning("Suggested value is required")
 
-        # ── Corrections sub-tab ──
-        with comm_tabs[2]:
-            if sb:
-                try:
-                    corr = sb.table("contributions").select("*").eq(
-                        "object_designation", designation
-                    ).eq("kind", "correction").order(
-                        "created_at", desc=True
-                    ).limit(50).execute()
-                    if corr.data:
-                        for c in corr.data:
-                            sd = c.get("structured_data") or {}
-                            status_icon = {"published": "🟡", "accepted": "✅", "rejected": "❌"}.get(
-                                c.get("status", ""), "🟡"
-                            )
-                            st.markdown(
-                                f"{status_icon} **{sd.get('field', '?')}**: "
-                                f"`{sd.get('current', '?')}` -> `{sd.get('suggested', '?')}` "
-                                f"— {c.get('entity_name', '?')}"
-                            )
-                            if c.get("body"):
-                                st.caption(c["body"])
-                            refs = c.get("source_references") or []
-                            if refs:
-                                st.caption(f"Source: {', '.join(refs)}")
-                            st.markdown("---")
-                    else:
-                        st.info("No corrections suggested yet.")
-                except Exception:
-                    st.info("No corrections suggested yet.")
-
-                if entity:
-                    with st.form(key=f"corr_form_{designation}"):
-                        st.markdown("**Suggest a Data Correction**")
-                        corr_field = st.selectbox("Field", [
-                            "diameter", "albedo", "rotation_period", "spectral_type",
-                            "mass", "density", "absolute_magnitude", "other"
-                        ], key=f"corr_field_{designation}")
-                        corr_cols = st.columns(2)
-                        corr_current = corr_cols[0].text_input("Current value", key=f"corr_cur_{designation}")
-                        corr_suggested = corr_cols[1].text_input("Suggested value", key=f"corr_sug_{designation}")
-                        corr_source = st.text_input(
-                            "Source reference (DOI, URL, etc.)",
-                            key=f"corr_src_{designation}"
-                        )
-                        corr_justification = st.text_area("Justification", key=f"corr_just_{designation}")
-
-                        if st.form_submit_button("Submit Correction"):
-                            if corr_suggested.strip():
-                                profile = st.session_state.get("entity_profile", {})
-                                try:
-                                    sb.table("contributions").insert({
-                                        "object_designation": designation,
-                                        "entity_id": str(entity.id),
-                                        "entity_name": profile.get("display_name", entity.email),
-                                        "kind": "correction",
-                                        "body": corr_justification,
-                                        "structured_data": {
-                                            "field": corr_field,
-                                            "current": corr_current,
-                                            "suggested": corr_suggested,
-                                        },
-                                        "source_references": [corr_source] if corr_source.strip() else [],
-                                    }).execute()
-                                    st.success("Correction submitted for review.")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Failed: {str(e)[:80]}")
-                            else:
-                                st.warning("Suggested value is required")
-                else:
-                    st.caption("🔑 Log in to suggest corrections")
-            else:
-                st.info("Community features require Supabase configuration.")
+            st.markdown("##### Correction Dialogue")
+            _render_dialogue(designation, "correction", "correction", sb, entity)
 
         # ── Mission Reports sub-tab ──
         with comm_tabs[3]:
@@ -2121,6 +2237,9 @@ def display_object_details_dialog(obj_data):
                 if not can_deploy:
                     st.caption("🔑 Log in to deploy explorers")
 
+            st.markdown("##### Mission Dialogue")
+            _render_dialogue(designation, "mission_report", "mission comment", sb, entity)
+
 
 def objects_to_dataframe(objects):
     """Convert objects list to pandas DataFrame"""
@@ -2210,7 +2329,7 @@ def render_entity_auth_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.markdown("#### 🔑 Station Access")
     auth_action = st.sidebar.radio(
-        "Action", ["Login", "Sign Up"], horizontal=True,
+        "Action", ["Login", "Sign Up", "Reset Password"], horizontal=True,
         key="auth_action", label_visibility="collapsed"
     )
 
@@ -2234,11 +2353,13 @@ def render_entity_auth_sidebar():
                     err = str(e)
                     if "Invalid login" in err or "invalid" in err.lower():
                         st.sidebar.error("Invalid email or password")
+                    elif "Email not confirmed" in err or "not confirmed" in err.lower():
+                        st.sidebar.error("Please confirm your email first. Check your inbox.")
                     else:
                         st.sidebar.error(f"Login failed: {err[:80]}")
             else:
                 st.sidebar.warning("Enter email and password")
-    else:
+    elif auth_action == "Sign Up":
         new_name = st.sidebar.text_input("Display Name", key="signup_name")
         new_email = st.sidebar.text_input("Email", key="signup_email")
         new_pw = st.sidebar.text_input("Password", type="password", key="signup_pw")
@@ -2267,8 +2388,19 @@ def render_entity_auth_sidebar():
                     st.sidebar.error(f"Sign up failed: {str(e)[:80]}")
             else:
                 st.sidebar.warning("Name, email, and password required")
+    else:
+        reset_email = st.sidebar.text_input("Email", key="reset_email")
+        if st.sidebar.button("Send Reset Link", key="reset_btn", type="primary"):
+            if reset_email:
+                try:
+                    sb.auth.reset_password_email(reset_email)
+                    st.sidebar.success("Password reset link sent. Check your email.")
+                except Exception as e:
+                    st.sidebar.error(f"Failed: {str(e)[:80]}")
+            else:
+                st.sidebar.warning("Enter your email address")
 
-    st.sidebar.caption("Browse freely as guest — log in to contribute")
+    st.sidebar.caption("Browse freely as guest — log in to access object details")
     st.sidebar.markdown("---")
     return None
 
