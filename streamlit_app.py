@@ -603,21 +603,19 @@ def display_object_details_dialog(obj_data):
     st.markdown(f"### 🌠 {name}")
     st.markdown(f"**Designation:** {designation}")
 
-    # Gate: require authentication to view full object details
-    if st.session_state.entity is None:
+    # Gate: require authentication to view full object details (only when auth is available)
+    sb_gate = get_supabase()
+    if st.session_state.entity is None and sb_gate is not None:
         st.markdown("---")
         st.markdown("#### 🔒 Account Required")
         st.markdown(
             "Create a free account or log in to access full object details, "
             "community discussion, and exploration tools."
         )
-        sb = get_supabase()
-        if sb is None:
-            st.info("Authentication is not yet configured on this instance.")
-            return
+        sb = sb_gate
 
         gate_action = st.radio(
-            "Action", ["Login", "Sign Up", "Reset Password"],
+            "Action", ["Sign Up", "Login", "Reset Password"],
             horizontal=True, key="gate_auth_action", label_visibility="collapsed"
         )
         if gate_action == "Login":
